@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kanban Board</title>
+    <!-- Fonts and Icons -->
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <header class="app-bar">
+        <div class="app-title">
+            <i class="material-icons">view_kanban</i>
+            Kanban Board
+        </div>
+        <div class="app-bar-controls">
+            <div class="project-select-wrapper">
+                <select class="project-select" onchange="window.location.href='/?project=' + this.value">
+                    <option value="">Select project...</option>
+                    {% for p in projects %}
+                    <option value="{{ p.id }}" {% if p.id == current_project %}selected{% endif %}>{{ p.name }}</option>
+                    {% endfor %}
+                </select>
+                <i class="material-icons select-arrow">arrow_drop_down</i>
+            </div>
+            {% if current_project %}
+            <button class="delete-project-btn" onclick="confirmDeleteProject('{{ current_project }}', '{{ projects|selectattr('id', 'equalto', current_project)|map(attribute='name')|first|default('Unknown Project') }}')" title="Delete project">
+                <i class="material-icons">delete</i>
+            </button>
+            {% endif %}
+        </div>
+    </header>
+
+    {% if current_project %}
+    <!-- Tag Filter Bar -->
+    <div class="tag-filter-bar" id="tag-filter-bar" style="display: none;">
+        <span class="tag-filter-label">Filter by tags:</span>
+        <div class="active-filters" id="active-filters">
+            <span style="color: var(--text-disabled);">Click tags on cards to filter</span>
+        </div>
+        <div class="tag-filter-mode">
+            <button data-mode="any" class="active" onclick="setTagFilterMode('any')">ANY</button>
+            <button data-mode="all" onclick="setTagFilterMode('all')">ALL</button>
+        </div>
+        <button class="clear-filters-btn" onclick="clearTagFilters()">Clear</button>
+    </div>
+
+    <div class="board-container">
+        {% for status in statuses %}
+        <div class="column">
+            <div class="column-header">
+                <span class="column-title">{{ status }}</span>
+                <span class="column-count">{{ items_by_status.get(status, [])|length }}</span>
+            </div>
+            <div class="column-content" data-status="{{ status }}"
+                 ondragover="handleDragOver(event)"
+                 ondragleave="handleDragLeave(event)"
+                 ondrop="handleDropWrapper(event)">
+                {% for item in items_by_status.get(status, []) %}
+                {% set rels = relationships.get(item.id, {}) %}
+                {% set is_blocked = rels.get('blocked_by', [])|length > 0 %}
+                <div class="card {{ item.type }}{% if is_blocked %} blocked{% endif %}"
+                     data-item-id="{{ item.id }}"
+                     data-item-type="{{ item.type }}"
+                     data-blocked="{{ 'true' if is_blocked else 'false' }}"
+                     draggable="{{ 'false' if is_blocked else 'true' }}"
+                     ondragstart="handleDragStart(event)"
+                     ondragend="handleDragEnd(event)"
+                     onclick="openEditModal({{ item.id }})">
+                    <div class="card-header">
+                        <span class="card-id">#{{ item.id }}</span>
+                        <div style="display: flex; gap: 4px;">
+                            <span class="card-priority">P{{ item.priority }}</span>
+                            {% if item.complexity %}<span class="card-complexity complexity-{{ item.complexity }}">C{{ item.complexity }}</span>{% endif %}
+                        </div>
+                    </div>
+                    <div class="card-title">{{ item.title }}</div>
+
+                    {% if item.tags %}
+                    <div class="tags-container">
+                        {% for tag in item.tags %}
+                        <span class="tag-badge"
+                              data-tag-name="{{ tag.name }}"
+                              style="background: {{ tag.color }}20; color: {{ tag.color }}; border: 1px solid {{ tag.color }}40;"
+                              onclick="event.stopPropagation(); toggleTagFilter(this.dataset.tagName)">
+                            {{ tag.name }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+
+                    {% if rels.get('blocked_by') or rels.get('blocks') or rels.get('depends_on') or rels.get('dependency_of') or rels.get('relates_to') or rels.get('duplicates') %}
+                    <div class="badges-container">
+                        {% if rels.get('blocked_by') %}
+                        <span class="badge badge-blocked-by" title="Blocked by: {% for r in rels.blocked_by %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                            <i class="material-icons">block</i> Blocked by {{ rels.blocked_by|length }}
+                        </span>
+                        {% endif %}
+                        {% if rels.get('blocks') %}
+                        <span class="badge badge-blocks" title="Blocks: {% for r in rels.blocks %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                            <i class="material-icons">remove_circle_outline</i> Blocks {{ rels.blocks|length }}
+                        </span>
+                        {% endif %}
+                        {% if rels.get('depends_on') %}
+                        <span class="badge badge-depends-on" title="Depends on: {% for r in rels.depends_on %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                            <i class="material-icons">hourglass_empty</i> Depends {{ rels.depends_on|length }}
+                        </span>
+                        {% endif %}
+                        {% if rels.get('dependency_of') %}
+                        <span class="badge badge-dependency-of" title="Dependency of: {% for r in rels.dependency_of %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                            <i class="material-icons">push_pin</i> Dep of {{ rels.dependency_of|length }}
+                        </span>
+                        {% endif %}
+                        {% if rels.get('relates_to') %}
+                        <span class="badge badge-relates" title="Related: {% for r in rels.relates_to %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                            <i class="material-icons">link</i> Relates {{ rels.relates_to|length }}
+                        </span>
+                        {% endif %}
+                        {% if rels.get('duplicates') %}
+                        <span class="badge badge-duplicates" title="Duplicates: {% for r in rels.duplicates %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                            <i class="material-icons">content_copy</i> Dupes {{ rels.duplicates|length }}
+                        </span>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+
+                    <div class="card-meta">
+                        <span class="card-type">
+                            {% if item.type == 'feature' %}
+                            <i class="material-icons" style="font-size:14px; margin-right:4px;">extension</i>
+                            {% elif item.type == 'issue' %}
+                            <i class="material-icons" style="font-size:14px; margin-right:4px;">bug_report</i>
+                            {% elif item.type == 'todo' %}
+                            <i class="material-icons" style="font-size:14px; margin-right:4px;">task_alt</i>
+                            {% elif item.type == 'diary' %}
+                            <i class="material-icons" style="font-size:14px; margin-right:4px;">book</i>
+                            {% endif %}
+                            {{ item.type }}
+                        </span>
+                        <button class="card-action" onclick="event.stopPropagation(); openUpdateModal({{ item.id }})" title="Add update">
+                            <i class="material-icons">add_comment</i>
+                        </button>
+                    </div>
+                </div>
+                {% else %}
+                <div class="empty-state">No items</div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- FAB Buttons -->
+    <div class="fab-container">
+        <button class="fab small" onclick="openNewItemModal()" title="New Item">
+            <i class="material-icons">add_task</i>
+        </button>
+        <button class="fab small" onclick="openUpdateModal()" title="New Update">
+            <i class="material-icons">add_comment</i>
+        </button>
+        <button class="fab" onclick="document.querySelector('.updates-drawer').classList.toggle('open')" title="View Updates">
+            <i class="material-icons">history</i>
+        </button>
+    </div>
+
+    <!-- Updates Sidebar -->
+    <aside class="updates-drawer">
+        <div class="drawer-header">
+            <span class="drawer-title">Recent Updates</span>
+            <button class="close-btn" onclick="document.querySelector('.updates-drawer').classList.remove('open')">
+                <i class="material-icons">close</i>
+            </button>
+        </div>
+        <div class="search-input-wrapper">
+            <i class="material-icons">search</i>
+            <input type="text" class="search-input" id="updates-search" placeholder="Search updates..." oninput="filterUpdates(this.value)">
+        </div>
+        <div class="drawer-content" id="updates-content">
+            {% for item_id, group in updates_by_item.items() %}
+            <div class="update-group" data-item-id="{{ item_id }}" data-item-title="{{ group.item.title if group.item else 'General' }}">
+                <div class="update-group-header{% if not group.item %} general{% endif %}">
+                    {% if group.item %}
+                    <i class="material-icons">label</i>
+                    <span>#{{ group.item.id }} {{ group.item.title }}</span>
+                    {% else %}
+                    <i class="material-icons">notes</i>
+                    <span>General</span>
+                    {% endif %}
+                </div>
+                {% for update in group.updates %}
+                <div class="update-item" data-content="{{ update.content|lower }}">
+                    <div class="update-meta">{{ update.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+                    <div class="update-text">{{ update.content }}</div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+                <div class="empty-state">No updates yet</div>
+            {% endfor %}
+        </div>
+    </aside>
+    {% else %}
+    <div class="empty-state" style="margin-top: 50px;">
+        <i class="material-icons" style="font-size: 48px; margin-bottom: 16px; opacity: 0.5;">dashboard</i><br>
+        Select a project to view its board
+    </div>
+    {% endif %}
+
+    <!-- Edit Item Modal -->
+    <div class="modal-overlay" id="edit-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title">Edit Item <span id="edit-item-id"></span></span>
+                <button class="close-btn" onclick="closeModal('edit-modal')">
+                    <i class="material-icons">close</i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="edit-id">
+                <div class="form-group">
+                    <label class="form-label">Title</label>
+                    <input type="text" class="form-input" id="edit-title">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Description</label>
+                    <textarea class="form-textarea" id="edit-description"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Priority</label>
+                    <select class="form-select" id="edit-priority">
+                        <option value="1">P1 - Critical</option>
+                        <option value="2">P2 - High</option>
+                        <option value="3">P3 - Medium</option>
+                        <option value="4">P4 - Low</option>
+                        <option value="5">P5 - Minimal</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Complexity</label>
+                    <select class="form-select" id="edit-complexity">
+                        <option value="">Not Set</option>
+                        <option value="1">C1 - Trivial</option>
+                        <option value="2">C2 - Simple</option>
+                        <option value="3">C3 - Moderate</option>
+                        <option value="4">C4 - Complex</option>
+                        <option value="5">C5 - Very Complex</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Status</label>
+                    <select class="form-select" id="edit-status">
+                        <option value="backlog">Backlog</option>
+                        <option value="todo">Todo</option>
+                        <option value="in_progress">In Progress</option>
+                        <option value="review">Review</option>
+                        <option value="done">Done</option>
+                        <option value="closed">Closed</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Type</label>
+                    <input type="text" class="form-input" id="edit-type" disabled style="opacity: 0.6;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Tags</label>
+                    <div class="tag-input-wrapper">
+                        <input type="text" class="tag-input" id="edit-tags-input" placeholder="Add tags (press Enter)...">
+                        <div class="tag-suggestions" id="edit-tags-suggestions"></div>
+                    </div>
+                    <div class="tags-container" id="edit-current-tags" style="margin-top: 8px;"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('edit-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="saveItem()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Update Modal -->
+    <div class="modal-overlay" id="update-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title">New Update</span>
+                <button class="close-btn" onclick="closeModal('update-modal')">
+                    <i class="material-icons">close</i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">Content</label>
+                    <textarea class="form-textarea" id="update-content" placeholder="What's the update?"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Link to Items (optional)</label>
+                    <select class="form-select" id="update-items" multiple style="min-height: 100px;">
+                    </select>
+                    <small style="color: var(--text-disabled); font-size: 11px;">Ctrl+click to select multiple</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('update-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="createUpdate()">Create Update</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- New Item Modal -->
+    <div class="modal-overlay" id="newitem-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title">New Item</span>
+                <button class="close-btn" onclick="closeModal('newitem-modal')">
+                    <i class="material-icons">close</i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label class="form-label">Type</label>
+                    <select class="form-select" id="newitem-type">
+                        <option value="issue">Issue</option>
+                        <option value="feature">Feature</option>
+                        <option value="todo">Todo</option>
+                        <option value="diary">Diary</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Title</label>
+                    <input type="text" class="form-input" id="newitem-title" placeholder="Enter title...">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Description</label>
+                    <textarea class="form-textarea" id="newitem-description" placeholder="Optional description..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Priority</label>
+                    <select class="form-select" id="newitem-priority">
+                        <option value="1">P1 - Critical</option>
+                        <option value="2">P2 - High</option>
+                        <option value="3" selected>P3 - Medium</option>
+                        <option value="4">P4 - Low</option>
+                        <option value="5">P5 - Minimal</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Complexity (Optional)</label>
+                    <select class="form-select" id="newitem-complexity">
+                        <option value="" selected>Not Set</option>
+                        <option value="1">C1 - Trivial</option>
+                        <option value="2">C2 - Simple</option>
+                        <option value="3">C3 - Moderate</option>
+                        <option value="4">C4 - Complex</option>
+                        <option value="5">C5 - Very Complex</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('newitem-modal')">Cancel</button>
+                <button class="btn btn-primary" onclick="createItem()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Confirmation Modal -->
+    <div class="modal-overlay" id="delete-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <span class="modal-title">Delete Project</span>
+                <button class="close-btn" onclick="closeModal('delete-modal')">
+                    <i class="material-icons">close</i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p style="margin-bottom: var(--spacing-md);">Are you sure you want to delete project <strong id="delete-project-name"></strong>?</p>
+                <p style="color: var(--md-sys-color-error);">This will permanently delete all items and updates. This action cannot be undone.</p>
+                <input type="hidden" id="delete-project-id">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('delete-modal')">Cancel</button>
+                <button class="btn btn-danger" onclick="deleteProject()">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script>
+        const PROJECT_ID = '{{ current_project }}';
+    </script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
+</body>
+</html>
