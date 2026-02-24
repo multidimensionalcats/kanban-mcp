@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "kanban": {
+      "command": "python3",
+      "args": ["${HOME}/.claude/kanban-mcp/kanban_mcp.py"],
+      "env": {
+        "KANBAN_PROJECT_DIR": "${CLAUDE_PROJECT_DIR}"
+      }
+    }
+  }
+}
