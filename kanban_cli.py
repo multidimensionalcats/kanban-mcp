@@ -136,6 +136,47 @@ def do_search(db: KanbanDB, project_path: str, query: str, limit: int = 20, form
     return "\n".join(lines)
 
 
+def do_semantic_search(
+    db: KanbanDB,
+    project_path: str,
+    query: str,
+    limit: int = 10,
+    source_types: str = None,
+    threshold: float = 0.0,
+    format: str = "text"
+) -> str:
+    """Semantic search using vector embeddings."""
+    project_id = db.ensure_project(project_path)
+
+    type_list = None
+    if source_types:
+        type_list = [t.strip() for t in source_types.split(',') if t.strip()]
+
+    results = db.semantic_search(project_id, query, limit, type_list, threshold)
+
+    if format == "json":
+        return json.dumps({"results": results, "count": len(results)}, indent=2, default=str)
+
+    if not results:
+        return "No semantic matches found"
+
+    lines = [f"## Semantic search: {query}"]
+
+    for r in results:
+        sim = f"{r['similarity']:.0%}"
+        if r['source_type'] == 'item':
+            status = f" ({r.get('status_name', '')})" if r.get('status_name') else ""
+            lines.append(f"- [{r.get('type_name', 'item')}#{r['source_id']}] {r.get('title', '')}{status} [{sim}]")
+            if r.get('snippet'):
+                lines.append(f"    {r['snippet'][:80]}...")
+        elif r['source_type'] == 'decision':
+            lines.append(f"- [decision#{r['source_id']}] {r.get('title', '')} [{sim}]")
+        elif r['source_type'] == 'update':
+            lines.append(f"- [update#{r['source_id']}] {r.get('snippet', '')[:60]}... [{sim}]")
+
+    return "\n".join(lines)
+
+
 def get_children(db: KanbanDB, project_path: str, item_id: int, recursive: bool = False, format: str = "text") -> str:
     """Get children of an item (epic)."""
     if recursive:
@@ -164,6 +205,110 @@ def get_children(db: KanbanDB, project_path: str, item_id: int, recursive: bool 
         lines.append(f"\nProgress: {progress['completed']}/{progress['total']} ({progress['percent']}%)")
 
     return "\n".join(lines)
+
+
+def get_files(
+    db: KanbanDB,
+    project_path: str,
+    item_id: int,
+    format: str = "text"
+) -> str:
+    """Get files linked to an item."""
+    files = db.get_item_files(item_id)
+
+    if format == "json":
+        return json.dumps({"files": files, "count": len(files)}, indent=2, default=str)
+
+    if not files:
+        return f"No files linked to item #{item_id}"
+
+    # Get item info for header
+    item = db.get_item(item_id)
+    title = item['title'] if item else 'Unknown'
+
+    lines = [f"## Files linked to #{item_id}: {title}"]
+    for f in files:
+        line_info = ""
+        if f.get('line_start') is not None:
+            if f.get('line_end') is not None:
+                line_info = f":{f['line_start']}-{f['line_end']}"
+            else:
+                line_info = f":{f['line_start']}"
+        lines.append(f"- {f['file_path']}{line_info}")
+
+    return "\n".join(lines)
+
+
+def link_file_cmd(
+    db: KanbanDB,
+    project_path: str,
+    item_id: int,
+    file_path: str,
+    line_start: int = None,
+    line_end: int = None,
+    format: str = "text"
+) -> str:
+    """Link a file to an item."""
+    try:
+        result = db.link_file(item_id, file_path, line_start, line_end)
+        if format == "json":
+            return json.dumps(result, indent=2, default=str)
+        if result.get('success'):
+            return f"Linked {file_path} to item #{item_id}"
+        return f"Error: {result.get('error')}"
+    except ValueError as e:
+        if format == "json":
+            return json.dumps({"success": False, "error": str(e)}, indent=2)
+        return f"Error: {e}"
+
+
+def unlink_file_cmd(
+    db: KanbanDB,
+    project_path: str,
+    item_id: int,
+    file_path: str,
+    line_start: int = None,
+    line_end: int = None,
+    format: str = "text"
+) -> str:
+    """Unlink a file from an item."""
+    result = db.unlink_file(item_id, file_path, line_start, line_end)
+    if format == "json":
+        return json.dumps(result, indent=2, default=str)
+    if result.get('success'):
+        return f"Unlinked {file_path} from item #{item_id}"
+    return f"Error: {result.get('error')}"
+
+
+def rebuild_embeddings(
+    db: KanbanDB,
+    project_path: str = None,
+    source_types: str = None,
+    all_projects: bool = False,
+    format: str = "text"
+) -> str:
+    """Rebuild embeddings for a project or all projects."""
+    type_list = None
+    if source_types:
+        type_list = [t.strip() for t in source_types.split(',') if t.strip()]
+
+    if all_projects:
+        result = db.rebuild_all_embeddings(type_list)
+    else:
+        if not project_path:
+            return "Error: --project required (or use --all)"
+        project_id = db.ensure_project(project_path)
+        result = db.rebuild_embeddings(project_id, type_list)
+
+    if format == "json":
+        return json.dumps(result, indent=2, default=str)
+
+    if result.get('success'):
+        msg = f"Rebuilt {result['processed']} embeddings"
+        if result.get('errors'):
+            msg += f" ({len(result['errors'])} errors)"
+        return msg
+    return f"Error: {result.get('error')}"
 
 
 def export_data(
@@ -223,8 +368,8 @@ def main():
     )
     parser.add_argument(
         "--project", "-p",
-        required=True,
-        help="Project directory path (usually $PWD)"
+        required=False,
+        help="Project directory path (usually $PWD). Required for most commands."
     )
     parser.add_argument(
         "--format", "-f",
@@ -247,10 +392,42 @@ def main():
     children_parser.add_argument("item_id", type=int, help="Item ID to get children for")
     children_parser.add_argument("--recursive", "-r", action="store_true", help="Include all descendants")
 
-    # Search command
-    search_parser = subparsers.add_parser("search", help="Search items and updates")
+    # Search command (keyword)
+    search_parser = subparsers.add_parser("search", help="Search items and updates (keyword)")
     search_parser.add_argument("query", help="Search query")
     search_parser.add_argument("--limit", "-l", type=int, default=20, help="Max results (default: 20)")
+
+    # Semantic search command
+    sem_parser = subparsers.add_parser("semantic-search", help="Semantic search using AI embeddings")
+    sem_parser.add_argument("query", help="Natural language search query")
+    sem_parser.add_argument("--limit", "-l", type=int, default=10, help="Max results (default: 10)")
+    sem_parser.add_argument("--types", "-t", help="Source types: item,decision,update (default: all)")
+    sem_parser.add_argument("--threshold", type=float, default=0.0, help="Min similarity 0.0-1.0 (default: 0.0)")
+
+    # Rebuild embeddings command
+    embed_parser = subparsers.add_parser("rebuild-embeddings", help="Rebuild vector embeddings for semantic search")
+    embed_parser.add_argument("--types", "-t", help="Comma-separated types to rebuild (item,decision,update). Default: all")
+    embed_parser.add_argument("--all", "-a", action="store_true", dest="all_projects", help="Rebuild for ALL projects (ignores -p)")
+
+    # Files command with subcommands
+    files_parser = subparsers.add_parser("files", help="Manage file links for an item")
+    files_parser.add_argument("item_id", type=int, help="Item ID to manage files for")
+    files_subparsers = files_parser.add_subparsers(dest="files_action", help="Action to perform")
+
+    # List files (default if no action)
+    files_subparsers.add_parser("list", help="List files linked to item (default)")
+
+    # Link file
+    link_parser = files_subparsers.add_parser("link", help="Link a file to the item")
+    link_parser.add_argument("file_path", help="Relative path to the file")
+    link_parser.add_argument("--start", type=int, help="Starting line number")
+    link_parser.add_argument("--end", type=int, help="Ending line number")
+
+    # Unlink file
+    unlink_parser = files_subparsers.add_parser("unlink", help="Unlink a file from the item")
+    unlink_parser.add_argument("file_path", help="Relative path to the file")
+    unlink_parser.add_argument("--start", type=int, help="Starting line number (must match)")
+    unlink_parser.add_argument("--end", type=int, help="Ending line number (must match)")
 
     # Export command with additional options
     export_parser = subparsers.add_parser("export", help="Export project data")
@@ -263,7 +440,7 @@ def main():
     export_parser.add_argument(
         "--type", "-t",
         dest="item_type",
-        help="Filter by item type (issue, feature, epic, todo, diary)"
+        help="Filter by item type (issue, feature, epic, todo, diary, question)"
     )
     export_parser.add_argument(
         "--status", "-s",
@@ -316,11 +493,19 @@ def main():
     )
     
     args = parser.parse_args()
-    
+
     if not args.command:
         parser.print_help()
         sys.exit(1)
-    
+
+    # Check if --project is required for this command
+    all_projects = getattr(args, 'all_projects', False)
+    if args.command == "rebuild-embeddings" and all_projects:
+        pass  # --project not required when using --all
+    elif not args.project:
+        print("Error: --project/-p is required for this command", file=sys.stderr)
+        sys.exit(1)
+
     db = KanbanDB()
     
     commands = {
@@ -366,6 +551,54 @@ def main():
                 limit=getattr(args, 'limit', 20),
                 format=args.format
             )
+        elif args.command == "semantic-search":
+            result = do_semantic_search(
+                db,
+                args.project,
+                args.query,
+                limit=getattr(args, 'limit', 10),
+                source_types=getattr(args, 'types', None),
+                threshold=getattr(args, 'threshold', 0.0),
+                format=args.format
+            )
+        elif args.command == "rebuild-embeddings":
+            result = rebuild_embeddings(
+                db,
+                project_path=args.project if not getattr(args, 'all_projects', False) else None,
+                source_types=getattr(args, 'types', None),
+                all_projects=getattr(args, 'all_projects', False),
+                format=args.format
+            )
+        elif args.command == "files":
+            # Files command with subcommands
+            action = getattr(args, 'files_action', None) or 'list'
+            if action == 'link':
+                result = link_file_cmd(
+                    db,
+                    args.project,
+                    args.item_id,
+                    args.file_path,
+                    line_start=getattr(args, 'start', None),
+                    line_end=getattr(args, 'end', None),
+                    format=args.format
+                )
+            elif action == 'unlink':
+                result = unlink_file_cmd(
+                    db,
+                    args.project,
+                    args.item_id,
+                    args.file_path,
+                    line_start=getattr(args, 'start', None),
+                    line_end=getattr(args, 'end', None),
+                    format=args.format
+                )
+            else:  # list or default
+                result = get_files(
+                    db,
+                    args.project,
+                    args.item_id,
+                    format=args.format
+                )
         else:
             result = commands[args.command](db, args.project, args.format)
 

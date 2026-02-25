@@ -9,7 +9,8 @@ const TYPE_STATUSES = {
     'feature': ['backlog', 'todo', 'in_progress', 'review', 'done', 'closed'],
     'epic': ['backlog', 'todo', 'in_progress', 'review', 'done', 'closed'],
     'todo': ['backlog', 'todo', 'in_progress', 'done'],
-    'diary': ['done']
+    'diary': ['done'],
+    'question': ['backlog', 'review', 'closed']
 };
 
 // State

@@ -21,8 +21,14 @@ def cleanup_test_project(db, project_path):
     cursor = conn.cursor()
     try:
         cursor.execute("DELETE FROM update_items WHERE update_id IN (SELECT id FROM updates WHERE project_id = %s)", (project_id,))
+        # Clean up embeddings for items in this project
+        cursor.execute("DELETE FROM embeddings WHERE source_type = 'item' AND source_id IN (SELECT id FROM items WHERE project_id = %s)", (project_id,))
+        cursor.execute("DELETE FROM embeddings WHERE source_type = 'decision' AND source_id IN (SELECT id FROM item_decisions WHERE item_id IN (SELECT id FROM items WHERE project_id = %s))", (project_id,))
+        cursor.execute("DELETE FROM embeddings WHERE source_type = 'update' AND source_id IN (SELECT id FROM updates WHERE project_id = %s)", (project_id,))
         cursor.execute("DELETE FROM updates WHERE project_id = %s", (project_id,))
         cursor.execute("DELETE FROM item_tags WHERE item_id IN (SELECT id FROM items WHERE project_id = %s)", (project_id,))
+        cursor.execute("DELETE FROM item_decisions WHERE item_id IN (SELECT id FROM items WHERE project_id = %s)", (project_id,))
+        cursor.execute("DELETE FROM item_files WHERE item_id IN (SELECT id FROM items WHERE project_id = %s)", (project_id,))
         cursor.execute("DELETE FROM status_history WHERE item_id IN (SELECT id FROM items WHERE project_id = %s)", (project_id,))
         cursor.execute("DELETE FROM items WHERE project_id = %s", (project_id,))
         cursor.execute("DELETE FROM tags WHERE project_id = %s", (project_id,))
@@ -2693,6 +2699,999 @@ class TestSearchMCPTool(unittest.TestCase):
         result = self.server.tools['search']['function'](query="findable", limit=2)
         self.assertTrue(result['success'])
         self.assertLessEqual(len(result['items']), 2)
+
+
+class TestFileLinks(unittest.TestCase):
+    """Tests for file/code linking functionality."""
+
+    @classmethod
+    def setUpClass(cls):
+        from kanban_mcp import KanbanDB
+        cls.db = KanbanDB()
+        cls.test_project_path = "/tmp/test-file-links"
+        cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
+
+    def setUp(self):
+        from kanban_mcp import KanbanDB
+        self.db = KanbanDB()
+        cleanup_test_project(self.db, self.test_project_path)
+        self.db.ensure_project(self.test_project_path)
+        # Create test item
+        self.item_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="feature",
+            title="Test Feature"
+        )
+
+    def tearDown(self):
+        cleanup_test_project(self.db, self.test_project_path)
+
+    # --- Link File Tests ---
+
+    def test_link_file_whole_file(self):
+        """link_file should link whole file (no line numbers)."""
+        result = self.db.link_file(self.item_id, "src/main.py")
+        self.assertTrue(result['success'])
+        self.assertIn('link_id', result)
+
+        files = self.db.get_item_files(self.item_id)
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]['file_path'], "src/main.py")
+        self.assertIsNone(files[0]['line_start'])
+        self.assertIsNone(files[0]['line_end'])
+
+    def test_link_file_with_lines(self):
+        """link_file should link file with line range."""
+        result = self.db.link_file(self.item_id, "src/utils.py", line_start=10, line_end=25)
+        self.assertTrue(result['success'])
+
+        files = self.db.get_item_files(self.item_id)
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]['file_path'], "src/utils.py")
+        self.assertEqual(files[0]['line_start'], 10)
+        self.assertEqual(files[0]['line_end'], 25)
+
+    def test_link_file_with_start_line_only(self):
+        """link_file should accept start line without end line."""
+        result = self.db.link_file(self.item_id, "src/app.py", line_start=42)
+        self.assertTrue(result['success'])
+
+        files = self.db.get_item_files(self.item_id)
+        self.assertEqual(files[0]['line_start'], 42)
+        self.assertIsNone(files[0]['line_end'])
+
+    def test_link_file_duplicate_rejected(self):
+        """Linking same file+lines twice should fail."""
+        self.db.link_file(self.item_id, "src/main.py")
+        result = self.db.link_file(self.item_id, "src/main.py")
+        self.assertFalse(result['success'])
+        self.assertIn('exists', result['error'].lower())
+
+    def test_link_file_same_path_different_lines(self):
+        """Same file with different line ranges should succeed."""
+        self.db.link_file(self.item_id, "src/main.py", line_start=1, line_end=10)
+        result = self.db.link_file(self.item_id, "src/main.py", line_start=20, line_end=30)
+        self.assertTrue(result['success'])
+
+        files = self.db.get_item_files(self.item_id)
+        self.assertEqual(len(files), 2)
+
+    def test_link_file_nonexistent_item_fails(self):
+        """link_file should fail for non-existent item."""
+        with self.assertRaises(ValueError):
+            self.db.link_file(99999, "src/main.py")
+
+    # --- Unlink File Tests ---
+
+    def test_unlink_file(self):
+        """unlink_file should remove the file link."""
+        self.db.link_file(self.item_id, "src/main.py")
+        result = self.db.unlink_file(self.item_id, "src/main.py")
+        self.assertTrue(result['success'])
+
+        files = self.db.get_item_files(self.item_id)
+        self.assertEqual(len(files), 0)
+
+    def test_unlink_file_with_lines(self):
+        """unlink_file should remove specific line range link."""
+        self.db.link_file(self.item_id, "src/main.py", line_start=10, line_end=20)
+        self.db.link_file(self.item_id, "src/main.py", line_start=30, line_end=40)
+
+        result = self.db.unlink_file(self.item_id, "src/main.py", line_start=10, line_end=20)
+        self.assertTrue(result['success'])
+
+        files = self.db.get_item_files(self.item_id)
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0]['line_start'], 30)
+
+    def test_unlink_file_not_linked(self):
+        """unlink_file should return success=False if not linked."""
+        result = self.db.unlink_file(self.item_id, "not/linked.py")
+        self.assertFalse(result['success'])
+
+    # --- Get Item Files Tests ---
+
+    def test_get_item_files_empty(self):
+        """get_item_files should return empty list if no files linked."""
+        files = self.db.get_item_files(self.item_id)
+        self.assertEqual(files, [])
+
+    def test_get_item_files_multiple(self):
+        """get_item_files should return all linked files."""
+        self.db.link_file(self.item_id, "src/main.py")
+        self.db.link_file(self.item_id, "src/utils.py", line_start=10)
+        self.db.link_file(self.item_id, "tests/test_main.py", line_start=5, line_end=15)
+
+        files = self.db.get_item_files(self.item_id)
+        self.assertEqual(len(files), 3)
+        paths = [f['file_path'] for f in files]
+        self.assertIn("src/main.py", paths)
+        self.assertIn("src/utils.py", paths)
+        self.assertIn("tests/test_main.py", paths)
+
+    def test_get_item_files_ordered_by_path(self):
+        """get_item_files should return files ordered by path."""
+        self.db.link_file(self.item_id, "z_file.py")
+        self.db.link_file(self.item_id, "a_file.py")
+        self.db.link_file(self.item_id, "m_file.py")
+
+        files = self.db.get_item_files(self.item_id)
+        paths = [f['file_path'] for f in files]
+        self.assertEqual(paths, ["a_file.py", "m_file.py", "z_file.py"])
+
+    # --- Cascade Delete Tests ---
+
+    def test_cascade_delete_on_item_delete(self):
+        """Deleting item should cascade delete file links."""
+        self.db.link_file(self.item_id, "src/main.py")
+        self.db.link_file(self.item_id, "src/utils.py")
+
+        # Delete the item
+        self.db.delete_item(self.item_id)
+
+        # File links should be gone (verify via direct query since item is gone)
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT COUNT(*) FROM item_files WHERE item_id = %s",
+                (self.item_id,)
+            )
+            count = cursor.fetchone()[0]
+            self.assertEqual(count, 0)
+        finally:
+            cursor.close()
+            conn.close()
+
+
+class TestFileLinksMCPTools(unittest.TestCase):
+    """Tests for file linking MCP tools."""
+
+    def setUp(self):
+        from kanban_mcp import KanbanMCPServer
+        self.server = KanbanMCPServer()
+        self.test_project_path = "/tmp/test-file-links-tools"
+        cleanup_test_project(self.server.db, self.test_project_path)
+        self.server.tools['set_current_project']['function'](self.test_project_path)
+        # Create test item
+        result = self.server.tools['new_item']['function'](
+            item_type="feature",
+            title="Test Feature"
+        )
+        self.item_id = result['item']['id']
+
+    def tearDown(self):
+        cleanup_test_project(self.server.db, self.test_project_path)
+
+    # --- Tool Registration Tests ---
+
+    def test_link_file_tool_exists(self):
+        """link_file tool should be registered."""
+        self.assertIn('link_file', self.server.tools)
+
+    def test_unlink_file_tool_exists(self):
+        """unlink_file tool should be registered."""
+        self.assertIn('unlink_file', self.server.tools)
+
+    def test_get_item_files_tool_exists(self):
+        """get_item_files tool should be registered."""
+        self.assertIn('get_item_files', self.server.tools)
+
+    # --- Tool Functionality Tests ---
+
+    def test_link_file_tool(self):
+        """link_file tool should link file to item."""
+        result = self.server.tools['link_file']['function'](
+            item_id=self.item_id,
+            file_path="src/main.py"
+        )
+        self.assertTrue(result['success'])
+
+        files_result = self.server.tools['get_item_files']['function'](self.item_id)
+        self.assertEqual(len(files_result['files']), 1)
+        self.assertEqual(files_result['files'][0]['file_path'], "src/main.py")
+
+    def test_link_file_tool_with_lines(self):
+        """link_file tool should accept line_start and line_end."""
+        result = self.server.tools['link_file']['function'](
+            item_id=self.item_id,
+            file_path="src/utils.py",
+            line_start=10,
+            line_end=25
+        )
+        self.assertTrue(result['success'])
+
+        files_result = self.server.tools['get_item_files']['function'](self.item_id)
+        self.assertEqual(files_result['files'][0]['line_start'], 10)
+        self.assertEqual(files_result['files'][0]['line_end'], 25)
+
+    def test_unlink_file_tool(self):
+        """unlink_file tool should remove file link."""
+        self.server.tools['link_file']['function'](
+            item_id=self.item_id,
+            file_path="src/main.py"
+        )
+
+        result = self.server.tools['unlink_file']['function'](
+            item_id=self.item_id,
+            file_path="src/main.py"
+        )
+        self.assertTrue(result['success'])
+
+        files_result = self.server.tools['get_item_files']['function'](self.item_id)
+        self.assertEqual(len(files_result['files']), 0)
+
+    def test_get_item_files_tool(self):
+        """get_item_files tool should return linked files."""
+        self.server.tools['link_file']['function'](
+            item_id=self.item_id,
+            file_path="src/a.py"
+        )
+        self.server.tools['link_file']['function'](
+            item_id=self.item_id,
+            file_path="src/b.py",
+            line_start=5
+        )
+
+        result = self.server.tools['get_item_files']['function'](self.item_id)
+        self.assertTrue(result['success'])
+        self.assertEqual(result['count'], 2)
+        self.assertIn('files', result)
+
+
+class TestQuestionType(unittest.TestCase):
+    """Tests for question item type for AI autonomous loops."""
+
+    @classmethod
+    def setUpClass(cls):
+        from kanban_mcp import KanbanDB
+        cls.db = KanbanDB()
+        cls.test_project_path = "/tmp/test-question-type"
+        cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
+
+    def setUp(self):
+        from kanban_mcp import KanbanDB
+        self.db = KanbanDB()
+        cleanup_test_project(self.db, self.test_project_path)
+        self.db.ensure_project(self.test_project_path)
+
+    def tearDown(self):
+        cleanup_test_project(self.db, self.test_project_path)
+
+    def test_create_question_item(self):
+        """Question items can be created."""
+        item_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="question",
+            title="Redis vs Memcached for caching?",
+            description="Decision: Using Redis. Rationale: Better data structures support."
+        )
+        self.assertIsNotNone(item_id)
+
+        item = self.db.get_item(item_id)
+        self.assertEqual(item['type_name'], 'question')
+        self.assertEqual(item['title'], "Redis vs Memcached for caching?")
+        self.assertIn("Redis", item['description'])
+
+    def test_question_default_status_is_backlog(self):
+        """Question items should start in backlog (pending) status."""
+        item_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="question",
+            title="Test Question"
+        )
+        item = self.db.get_item(item_id)
+        self.assertEqual(item['status_name'], 'backlog')
+
+    def test_question_workflow_backlog_to_review(self):
+        """Question should advance from backlog (pending) to review (reviewed)."""
+        item_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="question",
+            title="Test Question"
+        )
+
+        result = self.db.advance_status(item_id)
+        self.assertTrue(result['success'])
+        self.assertEqual(result['new_status'], 'review')
+
+    def test_question_workflow_review_to_closed(self):
+        """Question should advance from review (reviewed) to closed."""
+        item_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="question",
+            title="Test Question"
+        )
+
+        self.db.advance_status(item_id)  # backlog -> review
+        result = self.db.advance_status(item_id)  # review -> closed
+        self.assertTrue(result['success'])
+        self.assertEqual(result['new_status'], 'closed')
+
+    def test_question_full_workflow(self):
+        """Question should have workflow: backlog -> review -> closed."""
+        item_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="question",
+            title="Full Workflow Test"
+        )
+
+        # Start at backlog (pending)
+        item = self.db.get_item(item_id)
+        self.assertEqual(item['status_name'], 'backlog')
+
+        # Advance to review (reviewed)
+        self.db.advance_status(item_id)
+        item = self.db.get_item(item_id)
+        self.assertEqual(item['status_name'], 'review')
+
+        # Advance to closed
+        self.db.advance_status(item_id)
+        item = self.db.get_item(item_id)
+        self.assertEqual(item['status_name'], 'closed')
+
+        # Should not advance past closed
+        result = self.db.advance_status(item_id)
+        self.assertFalse(result['success'])
+
+    def test_question_revert_status(self):
+        """Question should be able to revert status."""
+        item_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="question",
+            title="Revert Test"
+        )
+
+        self.db.advance_status(item_id)  # backlog -> review
+        result = self.db.revert_status(item_id)  # review -> backlog
+        self.assertTrue(result['success'])
+        self.assertEqual(result['new_status'], 'backlog')
+
+    def test_question_can_be_tagged_for_flagging(self):
+        """Question items can be tagged (e.g., 'flagged', 'bad-decision')."""
+        item_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="question",
+            title="Bad Decision Question"
+        )
+
+        # Add flagged tag
+        result = self.db.add_tag_to_item(item_id, "flagged")
+        self.assertTrue(result['success'])
+
+        # Add bad-decision tag
+        result = self.db.add_tag_to_item(item_id, "bad-decision")
+        self.assertTrue(result['success'])
+
+        # Verify tags
+        tags = self.db.get_item_tags(item_id)
+        tag_names = [t['name'] for t in tags]
+        self.assertIn('flagged', tag_names)
+        self.assertIn('bad-decision', tag_names)
+
+    def test_question_in_project_summary(self):
+        """Question items should appear in project summary."""
+        self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="question",
+            title="Summary Test Question"
+        )
+
+        summary = self.db.project_summary(self.test_project_id)
+        self.assertIn('question', summary)
+        self.assertIn('backlog', summary['question'])
+        self.assertEqual(summary['question']['backlog'], 1)
+
+    def test_question_list_items_filter(self):
+        """Question items should be filterable by type."""
+        self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="question",
+            title="Filter Test Question"
+        )
+        self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="issue",
+            title="Regular Issue"
+        )
+
+        items = self.db.list_items(project_id=self.test_project_id, type_name="question")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['type_name'], 'question')
+
+
+class TestQuestionTypeMCPTools(unittest.TestCase):
+    """Tests for question item type MCP tools."""
+
+    def setUp(self):
+        from kanban_mcp import KanbanMCPServer
+        self.server = KanbanMCPServer()
+        self.test_project_path = "/tmp/test-question-tools"
+        cleanup_test_project(self.server.db, self.test_project_path)
+        self.server.tools['set_current_project']['function'](self.test_project_path)
+
+    def tearDown(self):
+        cleanup_test_project(self.server.db, self.test_project_path)
+
+    def test_new_item_question_type(self):
+        """new_item tool should accept 'question' type."""
+        result = self.server.tools['new_item']['function'](
+            item_type="question",
+            title="Should we use Redis or Memcached?",
+            description="Decision: Using Redis. Rationale: Better data structures."
+        )
+        self.assertTrue(result['success'])
+        self.assertEqual(result['item']['type_name'], 'question')
+        self.assertEqual(result['item']['status_name'], 'backlog')
+
+    def test_question_advance_via_tool(self):
+        """advance_status tool should work for question items."""
+        result = self.server.tools['new_item']['function'](
+            item_type="question",
+            title="Test Question"
+        )
+        item_id = result['item']['id']
+
+        # Advance to review
+        advance_result = self.server.tools['advance_status']['function'](item_id)
+        self.assertTrue(advance_result['success'])
+        self.assertEqual(advance_result['new_status'], 'review')
+
+        # Advance to closed
+        advance_result = self.server.tools['advance_status']['function'](item_id)
+        self.assertTrue(advance_result['success'])
+        self.assertEqual(advance_result['new_status'], 'closed')
+
+    def test_question_list_filter(self):
+        """list_items tool should filter by question type."""
+        self.server.tools['new_item']['function'](
+            item_type="question",
+            title="Question 1"
+        )
+        self.server.tools['new_item']['function'](
+            item_type="issue",
+            title="Issue 1"
+        )
+
+        result = self.server.tools['list_items']['function'](item_type="question")
+        self.assertEqual(result['count'], 1)
+        self.assertEqual(result['items'][0]['type_name'], 'question')
+
+
+class TestDecisions(unittest.TestCase):
+    """Tests for decision history tracking functionality."""
+
+    @classmethod
+    def setUpClass(cls):
+        from kanban_mcp import KanbanDB
+        cls.db = KanbanDB()
+        cls.test_project_path = "/tmp/test-decisions"
+        cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
+
+    def setUp(self):
+        from kanban_mcp import KanbanDB
+        self.db = KanbanDB()
+        cleanup_test_project(self.db, self.test_project_path)
+        self.db.ensure_project(self.test_project_path)
+        self.item_id = self.db.create_item(self.test_project_id, "issue", "Test Issue")
+
+    def tearDown(self):
+        cleanup_test_project(self.db, self.test_project_path)
+
+    # --- Add Decision Tests ---
+
+    def test_add_decision_basic(self):
+        """add_decision should add a basic decision with just choice."""
+        result = self.db.add_decision(self.item_id, "React Context")
+        self.assertTrue(result['success'])
+        self.assertIn('decision_id', result)
+
+        decisions = self.db.get_item_decisions(self.item_id)
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]['choice'], "React Context")
+        self.assertIsNone(decisions[0]['rejected_alternatives'])
+        self.assertIsNone(decisions[0]['rationale'])
+
+    def test_add_decision_all_fields(self):
+        """add_decision should accept all optional fields."""
+        result = self.db.add_decision(
+            self.item_id,
+            choice="React Context",
+            rejected_alternatives="Redux (overkill), MobX (unfamiliar)",
+            rationale="Team knows Context, app is small"
+        )
+        self.assertTrue(result['success'])
+
+        decisions = self.db.get_item_decisions(self.item_id)
+        self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0]['choice'], "React Context")
+        self.assertEqual(decisions[0]['rejected_alternatives'], "Redux (overkill), MobX (unfamiliar)")
+        self.assertEqual(decisions[0]['rationale'], "Team knows Context, app is small")
+
+    def test_add_decision_nonexistent_item_fails(self):
+        """add_decision should fail for non-existent item."""
+        with self.assertRaises(ValueError):
+            self.db.add_decision(99999, "Some Choice")
+
+    def test_choice_max_length_enforced(self):
+        """add_decision should reject choice exceeding 200 chars."""
+        long_choice = "x" * 201
+        with self.assertRaises(ValueError) as ctx:
+            self.db.add_decision(self.item_id, long_choice)
+        self.assertIn("200", str(ctx.exception))
+
+    def test_rejected_max_length_enforced(self):
+        """add_decision should reject rejected_alternatives exceeding 500 chars."""
+        long_rejected = "x" * 501
+        with self.assertRaises(ValueError) as ctx:
+            self.db.add_decision(self.item_id, "Choice", rejected_alternatives=long_rejected)
+        self.assertIn("500", str(ctx.exception))
+
+    def test_rationale_max_length_enforced(self):
+        """add_decision should reject rationale exceeding 200 chars."""
+        long_rationale = "x" * 201
+        with self.assertRaises(ValueError) as ctx:
+            self.db.add_decision(self.item_id, "Choice", rationale=long_rationale)
+        self.assertIn("200", str(ctx.exception))
+
+    # --- Get Item Decisions Tests ---
+
+    def test_get_item_decisions_empty(self):
+        """get_item_decisions should return empty list if no decisions."""
+        decisions = self.db.get_item_decisions(self.item_id)
+        self.assertEqual(decisions, [])
+
+    def test_get_item_decisions_multiple(self):
+        """get_item_decisions should return all decisions in DESC order."""
+        self.db.add_decision(self.item_id, "First Decision")
+        self.db.add_decision(self.item_id, "Second Decision")
+        self.db.add_decision(self.item_id, "Third Decision")
+
+        decisions = self.db.get_item_decisions(self.item_id)
+        self.assertEqual(len(decisions), 3)
+        # Should be in DESC order (most recent first)
+        self.assertEqual(decisions[0]['choice'], "Third Decision")
+        self.assertEqual(decisions[2]['choice'], "First Decision")
+
+    # --- Delete Decision Tests ---
+
+    def test_delete_decision(self):
+        """delete_decision should remove the decision."""
+        result = self.db.add_decision(self.item_id, "To Delete")
+        decision_id = result['decision_id']
+
+        delete_result = self.db.delete_decision(decision_id)
+        self.assertTrue(delete_result['success'])
+
+        decisions = self.db.get_item_decisions(self.item_id)
+        self.assertEqual(len(decisions), 0)
+
+    def test_delete_decision_not_found(self):
+        """delete_decision should return success=False for non-existent decision."""
+        result = self.db.delete_decision(99999)
+        self.assertFalse(result['success'])
+        self.assertIn('error', result)
+
+    def test_cascade_delete_on_item_delete(self):
+        """Decisions should be deleted when item is deleted."""
+        self.db.add_decision(self.item_id, "Decision 1")
+        self.db.add_decision(self.item_id, "Decision 2")
+
+        # Delete the item
+        self.db.delete_item(self.item_id)
+
+        # Verify item and decisions are gone (check via direct query)
+        conn = self.db._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT COUNT(*) FROM item_decisions WHERE item_id = %s", (self.item_id,))
+            count = cursor.fetchone()[0]
+            self.assertEqual(count, 0)
+        finally:
+            cursor.close()
+            conn.close()
+
+
+class TestDecisionsMCPTools(unittest.TestCase):
+    """Tests for decision history MCP tools."""
+
+    def setUp(self):
+        from kanban_mcp import KanbanMCPServer
+        self.server = KanbanMCPServer()
+        self.test_project_path = "/tmp/test-decisions-mcp"
+        cleanup_test_project(self.server.db, self.test_project_path)
+        self.server.tools['set_current_project']['function'](self.test_project_path)
+        item_result = self.server.tools['new_item']['function'](
+            item_type="issue",
+            title="Test Issue for Decisions"
+        )
+        self.item_id = item_result['item']['id']
+
+    def tearDown(self):
+        cleanup_test_project(self.server.db, self.test_project_path)
+
+    # --- Tool Registration Tests ---
+
+    def test_add_decision_tool_exists(self):
+        """add_decision tool should be registered."""
+        self.assertIn('add_decision', self.server.tools)
+
+    def test_get_item_decisions_tool_exists(self):
+        """get_item_decisions tool should be registered."""
+        self.assertIn('get_item_decisions', self.server.tools)
+
+    def test_delete_decision_tool_exists(self):
+        """delete_decision tool should be registered."""
+        self.assertIn('delete_decision', self.server.tools)
+
+    # --- Tool Functionality Tests ---
+
+    def test_add_decision_tool(self):
+        """add_decision tool should add decision to item."""
+        result = self.server.tools['add_decision']['function'](
+            item_id=self.item_id,
+            choice="React Context",
+            rejected_alternatives="Redux",
+            rationale="Simpler"
+        )
+        self.assertTrue(result['success'])
+
+        decisions_result = self.server.tools['get_item_decisions']['function'](self.item_id)
+        self.assertEqual(len(decisions_result['decisions']), 1)
+        self.assertEqual(decisions_result['decisions'][0]['choice'], "React Context")
+
+    def test_add_decision_tool_choice_only(self):
+        """add_decision tool should work with just choice."""
+        result = self.server.tools['add_decision']['function'](
+            item_id=self.item_id,
+            choice="Python over Go"
+        )
+        self.assertTrue(result['success'])
+
+        decisions_result = self.server.tools['get_item_decisions']['function'](self.item_id)
+        self.assertEqual(len(decisions_result['decisions']), 1)
+
+    def test_get_item_decisions_tool(self):
+        """get_item_decisions tool should return decisions."""
+        self.server.tools['add_decision']['function'](
+            item_id=self.item_id,
+            choice="Decision 1"
+        )
+        self.server.tools['add_decision']['function'](
+            item_id=self.item_id,
+            choice="Decision 2"
+        )
+
+        result = self.server.tools['get_item_decisions']['function'](self.item_id)
+        self.assertTrue(result['success'])
+        self.assertEqual(result['count'], 2)
+        self.assertEqual(len(result['decisions']), 2)
+
+    def test_delete_decision_tool(self):
+        """delete_decision tool should remove decision."""
+        add_result = self.server.tools['add_decision']['function'](
+            item_id=self.item_id,
+            choice="To Delete"
+        )
+        decision_id = add_result['decision_id']
+
+        delete_result = self.server.tools['delete_decision']['function'](decision_id)
+        self.assertTrue(delete_result['success'])
+
+        decisions_result = self.server.tools['get_item_decisions']['function'](self.item_id)
+        self.assertEqual(len(decisions_result['decisions']), 0)
+
+    def test_add_and_retrieve_decision(self):
+        """Full workflow: add decision and retrieve it."""
+        # Add decision with all fields
+        add_result = self.server.tools['add_decision']['function'](
+            item_id=self.item_id,
+            choice="MySQL over PostgreSQL",
+            rejected_alternatives="PostgreSQL (team unfamiliar), SQLite (too limited)",
+            rationale="Existing infrastructure uses MySQL"
+        )
+        self.assertTrue(add_result['success'])
+
+        # Retrieve and verify
+        get_result = self.server.tools['get_item_decisions']['function'](self.item_id)
+        self.assertEqual(get_result['count'], 1)
+
+        decision = get_result['decisions'][0]
+        self.assertEqual(decision['choice'], "MySQL over PostgreSQL")
+        self.assertEqual(decision['rejected_alternatives'], "PostgreSQL (team unfamiliar), SQLite (too limited)")
+        self.assertEqual(decision['rationale'], "Existing infrastructure uses MySQL")
+        self.assertIn('created_at', decision)
+
+
+class TestEmbeddings(unittest.TestCase):
+    """Tests for vector embedding functionality."""
+
+    @classmethod
+    def setUpClass(cls):
+        from kanban_mcp import KanbanDB
+        cls.db = KanbanDB()
+        cls.test_project_path = "/tmp/test-embeddings"
+        cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
+
+    def setUp(self):
+        cleanup_test_project(self.db, self.test_project_path)
+        self.db.ensure_project(self.test_project_path)
+        self.item_id = self.db.create_item(
+            self.test_project_id, "issue", "Test Issue",
+            description="This is a test issue about authentication"
+        )
+
+    def tearDown(self):
+        cleanup_test_project(self.db, self.test_project_path)
+
+    # --- Embedding Generation Tests ---
+
+    def test_generate_embedding_returns_bytes(self):
+        """generate_embedding should return bytes."""
+        result = self.db.generate_embedding("test text")
+        self.assertIsInstance(result, bytes)
+
+    def test_embedding_correct_size(self):
+        """Embedding should be 768 floats = 3072 bytes."""
+        result = self.db.generate_embedding("test text")
+        self.assertEqual(len(result), 768 * 4)  # 768 float32s
+
+    def test_embedding_deterministic(self):
+        """Same text should produce same embedding."""
+        e1 = self.db.generate_embedding("hello world")
+        e2 = self.db.generate_embedding("hello world")
+        self.assertEqual(e1, e2)
+
+    def test_embedding_different_for_different_text(self):
+        """Different text should produce different embeddings."""
+        e1 = self.db.generate_embedding("hello world")
+        e2 = self.db.generate_embedding("goodbye moon")
+        self.assertNotEqual(e1, e2)
+
+    # --- Upsert Tests ---
+
+    def test_upsert_embedding_creates(self):
+        """upsert_embedding should create new embedding when none exists."""
+        # Delete any auto-created embedding first to test creation
+        self.db.delete_embedding('item', self.item_id)
+        result = self.db.upsert_embedding('item', self.item_id)
+        self.assertTrue(result['success'])
+        self.assertEqual(result['status'], 'created')
+
+    def test_upsert_embedding_updates_on_content_change(self):
+        """upsert_embedding should update when content changes."""
+        # Get original embedding hash
+        original = self.db.get_embedding('item', self.item_id)
+        original_hash = original['content_hash']
+
+        # Update item content directly (bypassing update_item to avoid auto-embed)
+        with self.db._db_cursor(commit=True) as cursor:
+            cursor.execute("UPDATE items SET title = %s WHERE id = %s",
+                          ("Completely Different Title About Something Else", self.item_id))
+
+        # Now upsert should detect change and update
+        result = self.db.upsert_embedding('item', self.item_id)
+        self.assertEqual(result['status'], 'updated')
+
+        # Verify hash actually changed
+        updated = self.db.get_embedding('item', self.item_id)
+        self.assertNotEqual(original_hash, updated['content_hash'])
+
+    def test_upsert_embedding_skips_if_unchanged(self):
+        """upsert_embedding should skip if content unchanged."""
+        self.db.upsert_embedding('item', self.item_id)
+        result = self.db.upsert_embedding('item', self.item_id)
+        self.assertEqual(result['status'], 'unchanged')
+
+    def test_get_embedding(self):
+        """Should retrieve stored embedding."""
+        self.db.upsert_embedding('item', self.item_id)
+        embedding = self.db.get_embedding('item', self.item_id)
+        self.assertIsNotNone(embedding)
+        self.assertEqual(len(embedding['vector']), 768 * 4)
+
+    # --- Delete Tests ---
+
+    def test_delete_embedding(self):
+        """delete_embedding should remove embedding."""
+        self.db.upsert_embedding('item', self.item_id)
+        result = self.db.delete_embedding('item', self.item_id)
+        self.assertTrue(result['success'])
+        embedding = self.db.get_embedding('item', self.item_id)
+        self.assertIsNone(embedding)
+
+    # --- Semantic Search Tests ---
+
+    def test_semantic_search_returns_results(self):
+        """semantic_search should return matching items."""
+        self.db.upsert_embedding('item', self.item_id)
+        results = self.db.semantic_search(self.test_project_id, "authentication problem")
+        self.assertGreater(len(results), 0)
+        self.assertEqual(results[0]['source_type'], 'item')
+
+    def test_semantic_search_similarity_ordering(self):
+        """Results should be ordered by similarity descending."""
+        # Create items with different relevance
+        id1 = self.db.create_item(self.test_project_id, "issue", "Login bug",
+                                   description="User cannot log in")
+        id2 = self.db.create_item(self.test_project_id, "issue", "UI color",
+                                   description="Button is wrong color")
+        self.db.upsert_embedding('item', id1)
+        self.db.upsert_embedding('item', id2)
+
+        results = self.db.semantic_search(self.test_project_id, "authentication login problem")
+        # Login bug should rank higher than UI color
+        ids = [r['source_id'] for r in results]
+        self.assertIn(id1, ids)
+        self.assertIn(id2, ids)
+        self.assertLess(ids.index(id1), ids.index(id2))
+
+    def test_semantic_search_filter_by_type(self):
+        """semantic_search should filter by source_type."""
+        self.db.upsert_embedding('item', self.item_id)
+        decision_result = self.db.add_decision(self.item_id, "Use JWT for auth")
+        decision_id = decision_result['decision_id']
+        self.db.upsert_embedding('decision', decision_id)
+
+        results = self.db.semantic_search(self.test_project_id, "authentication", source_types=['decision'])
+        source_types = [r['source_type'] for r in results]
+        self.assertTrue(all(t == 'decision' for t in source_types))
+
+    def test_semantic_search_with_threshold(self):
+        """semantic_search should respect similarity threshold."""
+        self.db.upsert_embedding('item', self.item_id)
+        # Search with very high threshold should return no results for unrelated query
+        results = self.db.semantic_search(self.test_project_id, "basketball sports", threshold=0.9)
+        # The results should be fewer or empty for unrelated queries
+        auth_results = self.db.semantic_search(self.test_project_id, "authentication login", threshold=0.1)
+        self.assertGreaterEqual(len(auth_results), len(results))
+
+    # --- Find Similar Tests ---
+
+    def test_find_similar_returns_results(self):
+        """find_similar should return similar items."""
+        id2 = self.db.create_item(self.test_project_id, "issue", "Auth problem",
+                                   description="Authentication is broken")
+        self.db.upsert_embedding('item', self.item_id)
+        self.db.upsert_embedding('item', id2)
+
+        results = self.db.find_similar('item', self.item_id)
+        self.assertGreater(len(results), 0)
+
+    def test_find_similar_excludes_self(self):
+        """find_similar should not return the source item."""
+        self.db.upsert_embedding('item', self.item_id)
+        results = self.db.find_similar('item', self.item_id)
+        ids = [r['source_id'] for r in results if r['source_type'] == 'item']
+        self.assertNotIn(self.item_id, ids)
+
+    # --- Edge Cases ---
+
+    def test_upsert_embedding_invalid_source_type(self):
+        """upsert_embedding should handle invalid source type."""
+        result = self.db.upsert_embedding('invalid', 999)
+        self.assertFalse(result['success'])
+
+    def test_get_embedding_nonexistent(self):
+        """get_embedding should return None for nonexistent embedding."""
+        embedding = self.db.get_embedding('item', 999999)
+        self.assertIsNone(embedding)
+
+    def test_delete_embedding_nonexistent(self):
+        """delete_embedding should handle nonexistent embedding gracefully."""
+        result = self.db.delete_embedding('item', 999999)
+        self.assertFalse(result['success'])
+
+
+class TestEmbeddingsMCPTools(unittest.TestCase):
+    """Tests for embedding MCP tools."""
+
+    def setUp(self):
+        from kanban_mcp import KanbanMCPServer
+        self.server = KanbanMCPServer()
+        self.test_project_path = "/tmp/test-embeddings-mcp"
+        cleanup_test_project(self.server.db, self.test_project_path)
+        self.server.tools['set_current_project']['function'](self.test_project_path)
+
+    def tearDown(self):
+        cleanup_test_project(self.server.db, self.test_project_path)
+
+    def test_semantic_search_tool_exists(self):
+        """semantic_search tool should be registered."""
+        self.assertIn('semantic_search', self.server.tools)
+
+    def test_find_similar_tool_exists(self):
+        """find_similar tool should be registered."""
+        self.assertIn('find_similar', self.server.tools)
+
+    def test_rebuild_embeddings_tool_exists(self):
+        """rebuild_embeddings tool should be registered."""
+        self.assertIn('rebuild_embeddings', self.server.tools)
+
+    def test_semantic_search_tool_returns_results(self):
+        """semantic_search tool should work end-to-end."""
+        item_result = self.server.tools['new_item']['function'](
+            item_type="issue",
+            title="Database connection timeout",
+            description="MySQL connection times out after 30 seconds"
+        )
+        item_id = item_result['item']['id']
+
+        # Manually upsert embedding since auto-embed may not be enabled yet
+        self.server.db.upsert_embedding('item', item_id)
+
+        result = self.server.tools['semantic_search']['function'](
+            query="database timeout issue"
+        )
+        self.assertTrue(result['success'])
+        self.assertGreater(len(result['results']), 0)
+
+    def test_find_similar_tool_returns_results(self):
+        """find_similar tool should work end-to-end."""
+        # Create two similar items
+        item1_result = self.server.tools['new_item']['function'](
+            item_type="issue",
+            title="Login fails",
+            description="User authentication fails"
+        )
+        item1_id = item1_result['item']['id']
+
+        item2_result = self.server.tools['new_item']['function'](
+            item_type="issue",
+            title="Auth error",
+            description="Authentication returns error"
+        )
+        item2_id = item2_result['item']['id']
+
+        # Manually upsert embeddings
+        self.server.db.upsert_embedding('item', item1_id)
+        self.server.db.upsert_embedding('item', item2_id)
+
+        result = self.server.tools['find_similar']['function'](
+            source_type="item",
+            source_id=item1_id
+        )
+        self.assertTrue(result['success'])
+        # Should find item2 as similar
+        result_ids = [r['source_id'] for r in result['results']]
+        self.assertIn(item2_id, result_ids)
+
+    def test_rebuild_embeddings_tool_works(self):
+        """rebuild_embeddings should regenerate embeddings for project."""
+        # Create items
+        item_result = self.server.tools['new_item']['function'](
+            item_type="issue",
+            title="Test item for rebuild"
+        )
+        item_id = item_result['item']['id']
+
+        result = self.server.tools['rebuild_embeddings']['function']()
+        self.assertTrue(result['success'])
+        self.assertGreater(result['processed'], 0)
+
+        # Verify embedding was created
+        embedding = self.server.db.get_embedding('item', item_id)
+        self.assertIsNotNone(embedding)
 
 
 if __name__ == "__main__":

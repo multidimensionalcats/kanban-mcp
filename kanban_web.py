@@ -396,6 +396,56 @@ def api_search():
     return jsonify(results)
 
 
+@app.route('/api/semantic-search', methods=['GET'])
+def api_semantic_search():
+    """Semantic search across items, decisions, and updates.
+
+    Query params:
+        project: Project ID (required)
+        q: Search query (required)
+        limit: Max results (default: 10)
+        types: Comma-separated source types to search (item,decision,update). Empty = all
+        threshold: Minimum similarity 0.0-1.0 (default: 0.0)
+    """
+    project_id = request.args.get('project', '')
+    query = request.args.get('q', '')
+
+    if not project_id:
+        return jsonify({'error': 'project parameter required'}), 400
+    if not query:
+        return jsonify({'results': [], 'total_count': 0})
+
+    try:
+        limit = int(request.args.get('limit', '10'))
+        limit = max(1, min(limit, 100))
+    except ValueError:
+        limit = 10
+
+    try:
+        threshold = float(request.args.get('threshold', '0.0'))
+        threshold = max(0.0, min(threshold, 1.0))
+    except ValueError:
+        threshold = 0.0
+
+    types_param = request.args.get('types', '')
+    source_types = [t.strip() for t in types_param.split(',') if t.strip()] if types_param else None
+
+    try:
+        results = db.semantic_search(
+            project_id=project_id,
+            query=query,
+            limit=limit,
+            source_types=source_types,
+            threshold=threshold
+        )
+        return jsonify({
+            'results': results,
+            'total_count': len(results)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/items/<int:item_id>/tags', methods=['GET'])
 def api_get_item_tags(item_id):
     """Get tags for an item."""
@@ -429,6 +479,85 @@ def api_remove_item_tag(item_id, tag_id):
     result = db.remove_tag_from_item(item_id, tag_id)
     return jsonify(result)
 
+
+# --- File Linking API Routes ---
+
+@app.route('/api/items/<int:item_id>/files', methods=['GET'])
+def api_get_item_files(item_id):
+    """Get files linked to an item."""
+    files = db.get_item_files(item_id)
+    return jsonify({'files': files})
+
+
+@app.route('/api/items/<int:item_id>/files', methods=['POST'])
+def api_link_file(item_id):
+    """Link a file to an item."""
+    data = request.get_json() or {}
+    file_path = data.get('file_path')
+    line_start = data.get('line_start')
+    line_end = data.get('line_end')
+
+    if not file_path:
+        return jsonify({'success': False, 'error': 'file_path required'}), 400
+
+    try:
+        result = db.link_file(item_id, file_path, line_start, line_end)
+        if not result.get('success'):
+            return jsonify(result), 400
+        return jsonify(result), 201
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+
+@app.route('/api/items/<int:item_id>/files', methods=['DELETE'])
+def api_unlink_file(item_id):
+    """Unlink a file from an item."""
+    data = request.get_json() or {}
+    file_path = data.get('file_path')
+    line_start = data.get('line_start')
+    line_end = data.get('line_end')
+
+    if not file_path:
+        return jsonify({'success': False, 'error': 'file_path required'}), 400
+
+    result = db.unlink_file(item_id, file_path, line_start, line_end)
+    return jsonify(result)
+
+
+# --- Decision History API Routes ---
+
+@app.route('/api/items/<int:item_id>/decisions', methods=['GET'])
+def api_get_item_decisions(item_id):
+    """Get decisions for an item."""
+    decisions = db.get_item_decisions(item_id)
+    return jsonify({'decisions': decisions})
+
+
+@app.route('/api/items/<int:item_id>/decisions', methods=['POST'])
+def api_add_decision(item_id):
+    """Add a decision to an item."""
+    data = request.get_json() or {}
+    choice = data.get('choice')
+    rejected_alternatives = data.get('rejected_alternatives')
+    rationale = data.get('rationale')
+
+    if not choice:
+        return jsonify({'success': False, 'error': 'choice required'}), 400
+
+    try:
+        result = db.add_decision(item_id, choice, rejected_alternatives, rationale)
+        if not result.get('success'):
+            return jsonify(result), 400
+        return jsonify(result), 201
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
+
+
+@app.route('/api/decisions/<int:decision_id>', methods=['DELETE'])
+def api_delete_decision(decision_id):
+    """Delete a decision."""
+    result = db.delete_decision(decision_id)
+    return jsonify(result)
 
 
 STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'closed']
@@ -568,11 +697,20 @@ def index():
         
         # Get relationships
         relationships = get_all_relationships(current_project)
-    
+
+    # Get current project directory path
+    current_project_dir = ''
+    if current_project:
+        for p in projects:
+            if p['id'] == current_project:
+                current_project_dir = p['directory_path']
+                break
+
     return render_template(
         'index.html',
         projects=projects,
         current_project=current_project,
+        current_project_dir=current_project_dir,
         statuses=STATUSES,
         items_by_status=items_by_status,
         updates_by_item=updates_by_item,

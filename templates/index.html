@@ -120,32 +120,44 @@
                     {% if rels.get('blocked_by') or rels.get('blocks') or rels.get('depends_on') or rels.get('dependency_of') or rels.get('relates_to') or rels.get('duplicates') %}
                     <div class="badges-container">
                         {% if rels.get('blocked_by') %}
-                        <span class="badge badge-blocked-by" title="Blocked by: {% for r in rels.blocked_by %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                        <span class="badge badge-blocked-by clickable-badge"
+                              title="Blocked by: {% for r in rels.blocked_by %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %} (click to filter)"
+                              onclick="event.stopPropagation(); filterByRelationship({{ item.id }}, [{% for r in rels.blocked_by %}{{ r.id }}{% if not loop.last %}, {% endif %}{% endfor %}], 'blocked by')">
                             <i class="material-icons">block</i> Blocked by {{ rels.blocked_by|length }}
                         </span>
                         {% endif %}
                         {% if rels.get('blocks') %}
-                        <span class="badge badge-blocks" title="Blocks: {% for r in rels.blocks %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                        <span class="badge badge-blocks clickable-badge"
+                              title="Blocks: {% for r in rels.blocks %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %} (click to filter)"
+                              onclick="event.stopPropagation(); filterByRelationship({{ item.id }}, [{% for r in rels.blocks %}{{ r.id }}{% if not loop.last %}, {% endif %}{% endfor %}], 'blocks')">
                             <i class="material-icons">remove_circle_outline</i> Blocks {{ rels.blocks|length }}
                         </span>
                         {% endif %}
                         {% if rels.get('depends_on') %}
-                        <span class="badge badge-depends-on" title="Depends on: {% for r in rels.depends_on %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                        <span class="badge badge-depends-on clickable-badge"
+                              title="Depends on: {% for r in rels.depends_on %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %} (click to filter)"
+                              onclick="event.stopPropagation(); filterByRelationship({{ item.id }}, [{% for r in rels.depends_on %}{{ r.id }}{% if not loop.last %}, {% endif %}{% endfor %}], 'depends on')">
                             <i class="material-icons">hourglass_empty</i> Depends {{ rels.depends_on|length }}
                         </span>
                         {% endif %}
                         {% if rels.get('dependency_of') %}
-                        <span class="badge badge-dependency-of" title="Dependency of: {% for r in rels.dependency_of %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                        <span class="badge badge-dependency-of clickable-badge"
+                              title="Dependency of: {% for r in rels.dependency_of %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %} (click to filter)"
+                              onclick="event.stopPropagation(); filterByRelationship({{ item.id }}, [{% for r in rels.dependency_of %}{{ r.id }}{% if not loop.last %}, {% endif %}{% endfor %}], 'dependency of')">
                             <i class="material-icons">push_pin</i> Dep of {{ rels.dependency_of|length }}
                         </span>
                         {% endif %}
                         {% if rels.get('relates_to') %}
-                        <span class="badge badge-relates" title="Related: {% for r in rels.relates_to %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                        <span class="badge badge-relates clickable-badge"
+                              title="Related: {% for r in rels.relates_to %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %} (click to filter)"
+                              onclick="event.stopPropagation(); filterByRelationship({{ item.id }}, [{% for r in rels.relates_to %}{{ r.id }}{% if not loop.last %}, {% endif %}{% endfor %}], 'relates to')">
                             <i class="material-icons">link</i> Relates {{ rels.relates_to|length }}
                         </span>
                         {% endif %}
                         {% if rels.get('duplicates') %}
-                        <span class="badge badge-duplicates" title="Duplicates: {% for r in rels.duplicates %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %}">
+                        <span class="badge badge-duplicates clickable-badge"
+                              title="Duplicates: {% for r in rels.duplicates %}#{{ r.id }} {{ r.title }}{% if not loop.last %}, {% endif %}{% endfor %} (click to filter)"
+                              onclick="event.stopPropagation(); filterByRelationship({{ item.id }}, [{% for r in rels.duplicates %}{{ r.id }}{% if not loop.last %}, {% endif %}{% endfor %}], 'duplicates')">
                             <i class="material-icons">content_copy</i> Dupes {{ rels.duplicates|length }}
                         </span>
                         {% endif %}
@@ -164,6 +176,8 @@
                             <i class="material-icons" style="font-size:14px; margin-right:4px;">book</i>
                             {% elif item.type == 'epic' %}
                             <i class="material-icons" style="font-size:14px; margin-right:4px;">account_tree</i>
+                            {% elif item.type == 'question' %}
+                            <i class="material-icons" style="font-size:14px; margin-right:4px;">help_outline</i>
                             {% endif %}
                             {{ item.type }}
                         </span>
@@ -318,6 +332,37 @@
                     </div>
                     <div class="tags-container" id="edit-current-tags" style="margin-top: 8px;"></div>
                 </div>
+                <div class="form-group">
+                    <label class="form-label">
+                        <i class="material-icons" style="font-size:14px; vertical-align:middle;">attach_file</i>
+                        Linked Files
+                    </label>
+                    <div class="linked-files-list" id="edit-linked-files"></div>
+                    <div class="file-link-form">
+                        <input type="text" class="form-input file-path-input" id="add-file-path" placeholder="File path (e.g., src/main.py)">
+                        <input type="number" class="form-input line-input" id="add-file-start" placeholder="Start line">
+                        <input type="number" class="form-input line-input" id="add-file-end" placeholder="End line">
+                        <button class="btn btn-secondary btn-sm" onclick="addFileLink()">
+                            <i class="material-icons" style="font-size: 16px;">add</i>
+                        </button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">
+                        <i class="material-icons" style="font-size:14px; vertical-align:middle;">history</i>
+                        Decision History
+                    </label>
+                    <div class="decisions-list" id="edit-decisions-list"></div>
+                    <div class="decision-form">
+                        <input type="text" class="form-input" id="add-decision-choice" placeholder="What was decided (required)" maxlength="200">
+                        <input type="text" class="form-input" id="add-decision-rejected" placeholder="Rejected alternatives (optional)" maxlength="500">
+                        <input type="text" class="form-input" id="add-decision-rationale" placeholder="Rationale (optional)" maxlength="200">
+                        <button class="btn btn-secondary btn-sm" onclick="addDecision()">
+                            <i class="material-icons" style="font-size: 16px;">add</i>
+                            Add Decision
+                        </button>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal('edit-modal')">Cancel</button>
@@ -372,6 +417,7 @@
                         <option value="epic">Epic</option>
                         <option value="todo">Todo</option>
                         <option value="diary">Diary</option>
+                        <option value="question">Question</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -465,6 +511,7 @@
                         <option value="issue">Issue</option>
                         <option value="todo">Todo</option>
                         <option value="diary">Diary</option>
+                        <option value="question">Question</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -539,6 +586,16 @@
                         <input type="text" class="search-input" id="search-query" placeholder="Search items and updates..." onkeydown="if(event.key==='Enter')doSearch()">
                     </div>
                 </div>
+                <div class="form-group" style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+                    <label class="toggle-switch" style="margin: 0;">
+                        <input type="checkbox" id="semantic-search-toggle">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <label for="semantic-search-toggle" style="cursor: pointer; font-size: 14px; color: var(--text-secondary);">
+                        <i class="material-icons" style="font-size: 16px; vertical-align: middle; margin-right: 4px;">psychology</i>
+                        Semantic search (AI-powered)
+                    </label>
+                </div>
                 <div id="search-results"></div>
             </div>
         </div>
@@ -549,6 +606,7 @@
 
     <script>
         const PROJECT_ID = '{{ current_project }}';
+        const PROJECT_DIR = '{{ current_project_dir }}';
     </script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
     <script src="{{ url_for('static', filename='dragdrop.js') }}"></script>

@@ -126,8 +126,10 @@ function setTagFilterMode(mode) {
 function clearTagFilters() {
     activeTagFilters = [];
     activeEpicFilter = null;
+    activeRelationshipFilter = null;
     applyTagFilters();
     applyEpicFilter();
+    applyRelationshipFilter();
 }
 
 // --- Epic Filter Functions ---
@@ -188,6 +190,87 @@ function clearEpicFilter() {
     // Re-apply tag filters if any
     if (activeTagFilters.length > 0) {
         applyTagFilters();
+    } else {
+        // Show default hint
+        const activeDisplay = document.getElementById('active-filters');
+        if (activeDisplay) {
+            activeDisplay.textContent = '';
+            const span = document.createElement('span');
+            span.style.color = 'var(--text-disabled)';
+            span.textContent = 'Click tags on cards to filter';
+            activeDisplay.appendChild(span);
+        }
+    }
+}
+
+// --- Relationship Filter Functions ---
+let activeRelationshipFilter = null;
+
+function filterByRelationship(sourceItemId, relatedItemIds, relationshipType) {
+    // Include both the source item and all related items
+    const allItemIds = [sourceItemId, ...relatedItemIds];
+    activeRelationshipFilter = {
+        sourceId: sourceItemId,
+        relatedIds: relatedItemIds,
+        type: relationshipType,
+        allIds: allItemIds
+    };
+    applyRelationshipFilter();
+}
+
+function applyRelationshipFilter() {
+    const cards = document.querySelectorAll('.card');
+    const filterBar = document.getElementById('tag-filter-bar');
+
+    if (activeRelationshipFilter === null) {
+        // If no other filters active, show all cards
+        if (activeTagFilters.length === 0 && activeEpicFilter === null) {
+            cards.forEach(card => card.style.display = '');
+        }
+        updateRelationshipFilterUI();
+        return;
+    }
+
+    // Show filter bar when filtering
+    if (filterBar) filterBar.style.display = 'flex';
+
+    cards.forEach(card => {
+        const itemId = parseInt(card.dataset.itemId);
+        const matches = activeRelationshipFilter.allIds.includes(itemId);
+        card.style.display = matches ? '' : 'none';
+    });
+
+    updateRelationshipFilterUI();
+}
+
+function updateRelationshipFilterUI() {
+    const activeDisplay = document.getElementById('active-filters');
+    if (!activeDisplay) return;
+
+    if (activeRelationshipFilter !== null) {
+        activeDisplay.textContent = '';
+        const badge = document.createElement('span');
+        badge.className = 'tag-badge relationship-filter-badge';
+        badge.style.cssText = 'background: rgba(139, 92, 246, 0.2); color: #a78bfa; border: 1px solid rgba(139, 92, 246, 0.4);';
+        badge.onclick = () => clearRelationshipFilter();
+        badge.textContent = `#${activeRelationshipFilter.sourceId} ${activeRelationshipFilter.type} ${activeRelationshipFilter.relatedIds.map(id => '#' + id).join(', ')} `;
+        const icon = document.createElement('i');
+        icon.className = 'material-icons';
+        icon.style.fontSize = '12px';
+        icon.textContent = 'close';
+        badge.appendChild(icon);
+        activeDisplay.appendChild(badge);
+    }
+}
+
+function clearRelationshipFilter() {
+    activeRelationshipFilter = null;
+    applyRelationshipFilter();
+    // Re-apply other filters if any
+    if (activeTagFilters.length > 0) {
+        applyTagFilters();
+    } else if (activeEpicFilter !== null) {
+        applyEpicFilter();
     } else {
         // Show default hint
         const activeDisplay = document.getElementById('active-filters');
@@ -426,6 +509,377 @@ async function loadItemChildren(itemId) {
     }
 }
 
+// --- File Linking Functions ---
+
+// Load and display linked files for an item
+async function loadItemFiles(itemId) {
+    const container = document.getElementById('edit-linked-files');
+    if (!container) return;
+
+    try {
+        const res = await fetch(`/api/items/${itemId}/files`);
+        const data = await res.json();
+        const files = data.files || [];
+
+        container.textContent = '';
+
+        if (files.length === 0) {
+            const emptySpan = document.createElement('span');
+            emptySpan.style.color = 'var(--text-disabled)';
+            emptySpan.textContent = 'No files linked';
+            container.appendChild(emptySpan);
+            return;
+        }
+
+        files.forEach(file => {
+            const row = document.createElement('div');
+            row.className = 'linked-file-item';
+
+            // File icon
+            const icon = document.createElement('i');
+            icon.className = 'material-icons';
+            icon.style.fontSize = '16px';
+            icon.style.color = 'var(--text-secondary)';
+            icon.textContent = 'insert_drive_file';
+            row.appendChild(icon);
+
+            // File path display
+            const fullPath = formatFullPath(file.file_path);
+
+            // Format display text with line numbers
+            let displayText = file.file_path;
+            let lineNum = null;
+            if (file.line_start !== null) {
+                lineNum = file.line_start;
+                if (file.line_end !== null) {
+                    displayText += `:${file.line_start}-${file.line_end}`;
+                } else {
+                    displayText += `:${file.line_start}`;
+                }
+            }
+
+            // VS Code link (works from web pages)
+            const vscodeLink = document.createElement('a');
+            vscodeLink.className = 'file-vscode-btn';
+            vscodeLink.href = formatVSCodeLink(fullPath, lineNum);
+            vscodeLink.title = 'Open in VS Code';
+            const vscodeIcon = document.createElement('i');
+            vscodeIcon.className = 'material-icons';
+            vscodeIcon.style.fontSize = '14px';
+            vscodeIcon.textContent = 'open_in_new';
+            vscodeLink.appendChild(vscodeIcon);
+            row.appendChild(vscodeLink);
+
+            // Path text (copyable)
+            const pathSpan = document.createElement('span');
+            pathSpan.className = 'file-path-text';
+            pathSpan.textContent = displayText;
+            pathSpan.title = fullPath;
+            row.appendChild(pathSpan);
+
+            // Copy button
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'file-copy-btn';
+            copyBtn.title = 'Copy full path';
+            copyBtn.onclick = (e) => {
+                e.stopPropagation();
+                const copyPath = lineNum ? `${fullPath}:${lineNum}` : fullPath;
+                navigator.clipboard.writeText(copyPath).then(() => {
+                    showToast('Path copied');
+                });
+            };
+            const copyIcon = document.createElement('i');
+            copyIcon.className = 'material-icons';
+            copyIcon.style.fontSize = '14px';
+            copyIcon.textContent = 'content_copy';
+            copyBtn.appendChild(copyIcon);
+            row.appendChild(copyBtn);
+
+            // Remove button
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'file-remove-btn';
+            removeBtn.title = 'Remove link';
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                removeFileLink(itemId, file.file_path, file.line_start, file.line_end);
+            };
+            const removeIcon = document.createElement('i');
+            removeIcon.className = 'material-icons';
+            removeIcon.style.fontSize = '16px';
+            removeIcon.textContent = 'close';
+            removeBtn.appendChild(removeIcon);
+            row.appendChild(removeBtn);
+
+            container.appendChild(row);
+        });
+    } catch (err) {
+        container.textContent = '';
+        const span = document.createElement('span');
+        span.style.color = 'var(--md-sys-color-error)';
+        span.textContent = 'Error loading files';
+        container.appendChild(span);
+    }
+}
+
+// Format file path to full absolute path
+function formatFullPath(filePath) {
+    // Check if it's already an absolute path
+    if (filePath.startsWith('/')) {
+        return filePath;
+    }
+    // For relative paths, prepend the project directory
+    if (typeof PROJECT_DIR !== 'undefined' && PROJECT_DIR) {
+        return PROJECT_DIR + '/' + filePath;
+    }
+    return filePath;
+}
+
+// Format VS Code URL (vscode://file/path:line)
+function formatVSCodeLink(fullPath, lineNum) {
+    let url = 'vscode://file' + fullPath;
+    if (lineNum) {
+        url += ':' + lineNum;
+    }
+    return url;
+}
+
+// Add a file link
+async function addFileLink() {
+    if (!currentEditItemId) return;
+
+    const pathInput = document.getElementById('add-file-path');
+    const startInput = document.getElementById('add-file-start');
+    const endInput = document.getElementById('add-file-end');
+
+    const filePath = pathInput.value.trim();
+    if (!filePath) {
+        showToast('File path is required', 'error');
+        return;
+    }
+
+    const data = {
+        file_path: filePath,
+        line_start: startInput.value ? parseInt(startInput.value) : null,
+        line_end: endInput.value ? parseInt(endInput.value) : null
+    };
+
+    try {
+        const res = await fetch(`/api/items/${currentEditItemId}/files`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await res.json();
+
+        if (!res.ok || !result.success) {
+            throw new Error(result.error || 'Failed to link file');
+        }
+
+        // Clear inputs
+        pathInput.value = '';
+        startInput.value = '';
+        endInput.value = '';
+
+        // Reload file list
+        await loadItemFiles(currentEditItemId);
+        showToast('File linked');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// Remove a file link
+async function removeFileLink(itemId, filePath, lineStart, lineEnd) {
+    const data = {
+        file_path: filePath,
+        line_start: lineStart,
+        line_end: lineEnd
+    };
+
+    try {
+        const res = await fetch(`/api/items/${itemId}/files`, {
+            method: 'DELETE',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await res.json();
+
+        if (!res.ok || !result.success) {
+            throw new Error(result.error || 'Failed to unlink file');
+        }
+
+        // Reload file list
+        await loadItemFiles(itemId);
+        showToast('File unlinked');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// --- Decision History Functions ---
+
+// Load and display decisions for an item
+async function loadItemDecisions(itemId) {
+    const container = document.getElementById('edit-decisions-list');
+    if (!container) return;
+
+    try {
+        const res = await fetch(`/api/items/${itemId}/decisions`);
+        const data = await res.json();
+        const decisions = data.decisions || [];
+
+        container.textContent = '';
+
+        if (decisions.length === 0) {
+            const emptySpan = document.createElement('span');
+            emptySpan.style.color = 'var(--text-disabled)';
+            emptySpan.textContent = 'No decisions recorded';
+            container.appendChild(emptySpan);
+            return;
+        }
+
+        decisions.forEach(decision => {
+            const row = document.createElement('div');
+            row.className = 'decision-item';
+
+            // Decision content
+            const content = document.createElement('div');
+            content.className = 'decision-content';
+
+            // Choice (required)
+            const choiceDiv = document.createElement('div');
+            choiceDiv.className = 'decision-choice';
+            const choiceLabel = document.createElement('strong');
+            choiceLabel.textContent = 'Chose: ';
+            choiceDiv.appendChild(choiceLabel);
+            choiceDiv.appendChild(document.createTextNode(decision.choice));
+            content.appendChild(choiceDiv);
+
+            // Rejected alternatives (optional)
+            if (decision.rejected_alternatives) {
+                const rejectedDiv = document.createElement('div');
+                rejectedDiv.className = 'decision-rejected';
+                const rejectedLabel = document.createElement('span');
+                rejectedLabel.textContent = 'Rejected: ';
+                rejectedLabel.style.color = 'var(--md-sys-color-error)';
+                rejectedDiv.appendChild(rejectedLabel);
+                rejectedDiv.appendChild(document.createTextNode(decision.rejected_alternatives));
+                content.appendChild(rejectedDiv);
+            }
+
+            // Rationale (optional)
+            if (decision.rationale) {
+                const rationaleDiv = document.createElement('div');
+                rationaleDiv.className = 'decision-rationale';
+                const rationaleLabel = document.createElement('span');
+                rationaleLabel.textContent = 'Why: ';
+                rationaleLabel.style.color = 'var(--text-medium-emphasis)';
+                rationaleDiv.appendChild(rationaleLabel);
+                rationaleDiv.appendChild(document.createTextNode(decision.rationale));
+                content.appendChild(rationaleDiv);
+            }
+
+            // Timestamp
+            const timestamp = document.createElement('div');
+            timestamp.className = 'decision-timestamp';
+            timestamp.textContent = new Date(decision.created_at).toLocaleString();
+            content.appendChild(timestamp);
+
+            row.appendChild(content);
+
+            // Remove button
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'decision-remove-btn';
+            removeBtn.title = 'Delete decision';
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                removeDecision(decision.id);
+            };
+            const removeIcon = document.createElement('i');
+            removeIcon.className = 'material-icons';
+            removeIcon.style.fontSize = '16px';
+            removeIcon.textContent = 'close';
+            removeBtn.appendChild(removeIcon);
+            row.appendChild(removeBtn);
+
+            container.appendChild(row);
+        });
+    } catch (err) {
+        container.textContent = '';
+        const span = document.createElement('span');
+        span.style.color = 'var(--md-sys-color-error)';
+        span.textContent = 'Error loading decisions';
+        container.appendChild(span);
+    }
+}
+
+// Add a decision to current item
+async function addDecision() {
+    if (!currentEditItemId) return;
+
+    const choiceInput = document.getElementById('add-decision-choice');
+    const rejectedInput = document.getElementById('add-decision-rejected');
+    const rationaleInput = document.getElementById('add-decision-rationale');
+
+    const choice = choiceInput.value.trim();
+    if (!choice) {
+        showToast('Choice is required', 'error');
+        return;
+    }
+
+    const data = {
+        choice: choice,
+        rejected_alternatives: rejectedInput.value.trim() || null,
+        rationale: rationaleInput.value.trim() || null
+    };
+
+    try {
+        const res = await fetch(`/api/items/${currentEditItemId}/decisions`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await res.json();
+
+        if (!res.ok || !result.success) {
+            throw new Error(result.error || 'Failed to add decision');
+        }
+
+        // Clear inputs
+        choiceInput.value = '';
+        rejectedInput.value = '';
+        rationaleInput.value = '';
+
+        // Reload decisions list
+        await loadItemDecisions(currentEditItemId);
+        showToast('Decision recorded');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// Remove a decision
+async function removeDecision(decisionId) {
+    try {
+        const res = await fetch(`/api/decisions/${decisionId}`, {
+            method: 'DELETE'
+        });
+        const result = await res.json();
+
+        if (!res.ok || !result.success) {
+            throw new Error(result.error || 'Failed to delete decision');
+        }
+
+        // Reload decisions list
+        if (currentEditItemId) {
+            await loadItemDecisions(currentEditItemId);
+        }
+        showToast('Decision deleted');
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
 // Initialize on page load
 if (typeof PROJECT_ID !== 'undefined' && PROJECT_ID) {
     loadProjectTags();
@@ -506,6 +960,12 @@ async function openEditModal(itemId) {
         } else {
             document.getElementById('edit-children-section').style.display = 'none';
         }
+
+        // Load linked files
+        await loadItemFiles(itemId);
+
+        // Load decision history
+        await loadItemDecisions(itemId);
 
         openModal('edit-modal');
     } catch (err) {
@@ -837,6 +1297,7 @@ function openSearchModal() {
 async function doSearch() {
     const query = document.getElementById('search-query').value.trim();
     const resultsDiv = document.getElementById('search-results');
+    const useSemanticSearch = document.getElementById('semantic-search-toggle')?.checked || false;
 
     if (!query) {
         resultsDiv.textContent = '';
@@ -849,14 +1310,29 @@ async function doSearch() {
     }
 
     try {
-        const res = await fetch(`/api/search?project=${PROJECT_ID}&q=${encodeURIComponent(query)}`);
-        const data = await res.json();
+        let res, data;
 
-        if (!res.ok) {
-            throw new Error(data.error || 'Search failed');
+        if (useSemanticSearch) {
+            // Use semantic search API
+            res = await fetch(`/api/semantic-search?project=${PROJECT_ID}&q=${encodeURIComponent(query)}&limit=20`);
+            data = await res.json();
+
+            if (!res.ok) {
+                throw new Error(data.error || 'Semantic search failed');
+            }
+
+            renderSemanticSearchResults(data, resultsDiv);
+        } else {
+            // Use regular full-text search
+            res = await fetch(`/api/search?project=${PROJECT_ID}&q=${encodeURIComponent(query)}`);
+            data = await res.json();
+
+            if (!res.ok) {
+                throw new Error(data.error || 'Search failed');
+            }
+
+            renderSearchResults(data, resultsDiv);
         }
-
-        renderSearchResults(data, resultsDiv);
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -955,6 +1431,158 @@ function renderSearchResults(data, container) {
     }
 }
 
+function renderSemanticSearchResults(data, container) {
+    container.textContent = '';
+
+    if (!data.results || data.results.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-state';
+        empty.textContent = 'No semantic matches found';
+        container.appendChild(empty);
+        return;
+    }
+
+    // Group results by type
+    const items = data.results.filter(r => r.source_type === 'item');
+    const decisions = data.results.filter(r => r.source_type === 'decision');
+    const updates = data.results.filter(r => r.source_type === 'update');
+
+    // Render items
+    if (items.length > 0) {
+        const section = document.createElement('div');
+        section.className = 'search-section';
+
+        const header = document.createElement('div');
+        header.className = 'search-section-header';
+        header.textContent = `Items (${items.length})`;
+        section.appendChild(header);
+
+        items.forEach(item => {
+            const row = document.createElement('div');
+            row.className = 'search-result-item';
+            row.onclick = () => {
+                closeModal('search-modal');
+                openEditModal(item.source_id);
+            };
+
+            const idSpan = document.createElement('span');
+            idSpan.className = 'search-result-id';
+            idSpan.textContent = '#' + item.source_id;
+            row.appendChild(idSpan);
+
+            const titleSpan = document.createElement('span');
+            titleSpan.className = 'search-result-title';
+            titleSpan.textContent = item.title || '';
+            row.appendChild(titleSpan);
+
+            // Similarity score badge
+            const simBadge = document.createElement('span');
+            simBadge.className = 'search-result-similarity';
+            simBadge.textContent = Math.round(item.similarity * 100) + '%';
+            simBadge.title = 'Semantic similarity';
+            row.appendChild(simBadge);
+
+            if (item.type_name) {
+                const typeBadge = document.createElement('span');
+                typeBadge.className = 'search-result-type type-' + item.type_name;
+                typeBadge.textContent = item.type_name;
+                row.appendChild(typeBadge);
+            }
+
+            if (item.status_name) {
+                const statusBadge = document.createElement('span');
+                statusBadge.className = 'search-result-status status-' + item.status_name;
+                statusBadge.textContent = item.status_name;
+                row.appendChild(statusBadge);
+            }
+
+            if (item.snippet) {
+                const snippet = document.createElement('div');
+                snippet.className = 'search-result-snippet';
+                snippet.textContent = item.snippet;
+                row.appendChild(snippet);
+            }
+
+            section.appendChild(row);
+        });
+
+        container.appendChild(section);
+    }
+
+    // Render decisions
+    if (decisions.length > 0) {
+        const section = document.createElement('div');
+        section.className = 'search-section';
+
+        const header = document.createElement('div');
+        header.className = 'search-section-header';
+        header.textContent = `Decisions (${decisions.length})`;
+        section.appendChild(header);
+
+        decisions.forEach(decision => {
+            const row = document.createElement('div');
+            row.className = 'search-result-item';
+            if (decision.item_id) {
+                row.onclick = () => {
+                    closeModal('search-modal');
+                    openEditModal(decision.item_id);
+                };
+            }
+
+            const idSpan = document.createElement('span');
+            idSpan.className = 'search-result-id';
+            idSpan.textContent = 'D#' + decision.source_id;
+            row.appendChild(idSpan);
+
+            const titleSpan = document.createElement('span');
+            titleSpan.className = 'search-result-title';
+            titleSpan.textContent = decision.title || '';
+            row.appendChild(titleSpan);
+
+            const simBadge = document.createElement('span');
+            simBadge.className = 'search-result-similarity';
+            simBadge.textContent = Math.round(decision.similarity * 100) + '%';
+            row.appendChild(simBadge);
+
+            section.appendChild(row);
+        });
+
+        container.appendChild(section);
+    }
+
+    // Render updates
+    if (updates.length > 0) {
+        const section = document.createElement('div');
+        section.className = 'search-section';
+
+        const header = document.createElement('div');
+        header.className = 'search-section-header';
+        header.textContent = `Updates (${updates.length})`;
+        section.appendChild(header);
+
+        updates.forEach(update => {
+            const row = document.createElement('div');
+            row.className = 'search-result-update';
+
+            const meta = document.createElement('div');
+            meta.className = 'search-result-meta';
+            const simText = Math.round(update.similarity * 100) + '% match';
+            const dateText = update.created_at ? new Date(update.created_at).toLocaleString() : '';
+            meta.textContent = dateText ? `${simText} • ${dateText}` : simText;
+            row.appendChild(meta);
+
+            const snippet = document.createElement('div');
+            snippet.className = 'search-result-snippet';
+            snippet.textContent = update.snippet || '';
+            row.appendChild(snippet);
+
+            section.appendChild(row);
+        });
+
+        container.appendChild(section);
+    }
+}
+
 // Export for testing (CommonJS for Jest compatibility)
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -989,6 +1617,14 @@ if (typeof module !== 'undefined' && module.exports) {
         applyEpicFilter,
         updateEpicFilterUI,
         clearEpicFilter,
+
+        // Relationship filter
+        getActiveRelationshipFilter: () => activeRelationshipFilter,
+        setActiveRelationshipFilter: (filter) => { activeRelationshipFilter = filter; },
+        filterByRelationship,
+        applyRelationshipFilter,
+        updateRelationshipFilterUI,
+        clearRelationshipFilter,
 
         // Utilities
         escapeHtml,
@@ -1025,6 +1661,11 @@ if (typeof module !== 'undefined' && module.exports) {
         // Search
         openSearchModal,
         doSearch,
-        renderSearchResults
+        renderSearchResults,
+
+        // Decision history
+        loadItemDecisions,
+        addDecision,
+        removeDecision
     };
 }

@@ -40,19 +40,21 @@ class ExportBuilder:
         include_metrics: bool = False,
         include_updates: bool = False,
         include_epic_progress: bool = False,
+        include_decisions: bool = False,
         limit: int = 500
     ) -> Dict[str, Any]:
         """Build complete export data structure.
 
         Args:
             item_ids: Optional list of specific item IDs to include
-            item_type: Filter by item type (issue, feature, epic, todo, diary)
+            item_type: Filter by item type (issue, feature, epic, todo, diary, question)
             status: Filter by status (backlog, todo, in_progress, review, done, closed)
             include_tags: Include tag data for each item
             include_relationships: Include relationship data
             include_metrics: Include calculated metrics (lead_time, cycle_time, etc.)
             include_updates: Include project updates
             include_epic_progress: Include epic progress stats
+            include_decisions: Include decision history for items
             limit: Maximum items to export
 
         Returns:
@@ -74,7 +76,8 @@ class ExportBuilder:
                 "relationships": include_relationships,
                 "metrics": include_metrics,
                 "updates": include_updates,
-                "epic_progress": include_epic_progress
+                "epic_progress": include_epic_progress,
+                "decisions": include_decisions
             }
         }
 
@@ -98,7 +101,8 @@ class ExportBuilder:
                 include_tags=include_tags,
                 include_relationships=include_relationships,
                 include_metrics=include_metrics,
-                include_epic_progress=include_epic_progress
+                include_epic_progress=include_epic_progress,
+                include_decisions=include_decisions
             )
             processed_items.append(processed)
 
@@ -122,7 +126,8 @@ class ExportBuilder:
         include_tags: bool,
         include_relationships: bool,
         include_metrics: bool,
-        include_epic_progress: bool
+        include_epic_progress: bool,
+        include_decisions: bool = False
     ) -> Dict[str, Any]:
         """Process a single item for export."""
         processed = {
@@ -185,6 +190,19 @@ class ExportBuilder:
                 "percent": progress['percent'],
                 "incomplete_items": progress['incomplete_items']
             }
+
+        if include_decisions:
+            decisions = self.db.get_item_decisions(item['id'])
+            processed["decisions"] = [
+                {
+                    "id": d['id'],
+                    "choice": d['choice'],
+                    "rejected_alternatives": d.get('rejected_alternatives'),
+                    "rationale": d.get('rationale'),
+                    "created_at": self._serialize_datetime(d.get('created_at'))
+                }
+                for d in decisions
+            ]
 
         return processed
 
@@ -511,6 +529,17 @@ def _format_item_detailed(item: Dict) -> List[str]:
             if len(prog['incomplete_items']) > 10:
                 incomplete += f" ... ({len(prog['incomplete_items']) - 10} more)"
             lines.append(f"  - Incomplete: {incomplete}")
+
+    # Decision history
+    if item.get('decisions'):
+        lines.append("")
+        lines.append("**Decisions:**")
+        for d in item['decisions']:
+            lines.append(f"  - **Chose:** {d['choice']}")
+            if d.get('rejected_alternatives'):
+                lines.append(f"    - Rejected: {d['rejected_alternatives']}")
+            if d.get('rationale'):
+                lines.append(f"    - Why: {d['rationale']}")
 
     return lines
 

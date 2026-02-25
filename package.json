@@ -1,0 +1,14 @@
+{
+  "name": "kanban-mcp-web",
+  "version": "1.0.0",
+  "description": "JavaScript tests for Kanban MCP Web UI",
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:verbose": "jest --verbose"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "jest-environment-jsdom": "^29.7.0"
+  }
+}

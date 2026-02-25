@@ -5,9 +5,17 @@ set -euo pipefail
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 DEST_DIR="$HOME/kanban_mcp"
 
+# Python 3.13 required for onnxruntime (semantic search)
+PYTHON="/usr/bin/python3.13"
+if [[ ! -x "$PYTHON" ]]; then
+    echo "WARNING: $PYTHON not found, falling back to python3"
+    PYTHON="python3"
+fi
+
 echo "=== Deploying kanban-mcp ==="
 echo "Source: $SRC_DIR"
 echo "Destination: $DEST_DIR"
+echo "Python: $PYTHON"
 
 # Create destination
 mkdir -p "$DEST_DIR/hooks" "$DEST_DIR/templates" "$DEST_DIR/static"
@@ -45,15 +53,15 @@ if [[ -f "$CLAUDE_DESKTOP_CONFIG" ]]; then
         echo "Adding kanban-mcp to Claude Desktop config..."
         if command -v jq &>/dev/null; then
             tmp=$(mktemp)
-            jq '.mcpServers.kanban = {
-                "command": "python3",
-                "args": ["'"$DEST_DIR"'/kanban_mcp.py"]
+            jq --arg py "$PYTHON" --arg dest "$DEST_DIR" '.mcpServers.kanban = {
+                "command": $py,
+                "args": [($dest + "/kanban_mcp.py")]
             }' "$CLAUDE_DESKTOP_CONFIG" > "$tmp" && mv "$tmp" "$CLAUDE_DESKTOP_CONFIG"
             echo "Added kanban-mcp to Claude Desktop"
         else
             echo "WARNING: jq not installed, cannot auto-configure Claude Desktop"
             echo "Add manually to $CLAUDE_DESKTOP_CONFIG:"
-            echo '  "kanban": { "command": "python3", "args": ["'"$DEST_DIR"'/kanban_mcp.py"] }'
+            echo "  \"kanban\": { \"command\": \"$PYTHON\", \"args\": [\"$DEST_DIR/kanban_mcp.py\"] }"
         fi
     fi
 else
@@ -72,15 +80,15 @@ if [[ -f "$CLAUDE_CODE_CONFIG" ]]; then
         echo "Adding kanban-mcp to Claude Code config..."
         if command -v jq &>/dev/null; then
             tmp=$(mktemp)
-            jq '.mcpServers.kanban = {
-                "command": "python3",
-                "args": ["'"$DEST_DIR"'/kanban_mcp.py"]
+            jq --arg py "$PYTHON" --arg dest "$DEST_DIR" '.mcpServers.kanban = {
+                "command": $py,
+                "args": [($dest + "/kanban_mcp.py")]
             }' "$CLAUDE_CODE_CONFIG" > "$tmp" && mv "$tmp" "$CLAUDE_CODE_CONFIG"
             echo "Added kanban-mcp to Claude Code"
         else
             echo "WARNING: jq not installed, cannot auto-configure Claude Code"
             echo "Add manually to $CLAUDE_CODE_CONFIG:"
-            echo '  "kanban": { "command": "python3", "args": ["'"$DEST_DIR"'/kanban_mcp.py"] }'
+            echo "  \"kanban\": { \"command\": \"$PYTHON\", \"args\": [\"$DEST_DIR/kanban_mcp.py\"] }"
         fi
     fi
 else
@@ -101,12 +109,14 @@ if [[ -f "$CLAUDE_CODE_SETTINGS" ]]; then
         echo "Adding hooks to Claude Code settings..."
         if command -v jq &>/dev/null; then
             tmp=$(mktemp)
-            jq '.hooks.SessionStart = (.hooks.SessionStart // []) + [{
+            jq --arg cmd1 "$PYTHON $DEST_DIR/hooks/session_start.py" \
+               --arg cmd2 "$PYTHON $DEST_DIR/hooks/stop.py" \
+               '.hooks.SessionStart = (.hooks.SessionStart // []) + [{
                 "type": "command",
-                "command": "python3 '"$DEST_DIR"'/hooks/session_start.py"
+                "command": $cmd1
             }] | .hooks.Stop = (.hooks.Stop // []) + [{
                 "type": "command",
-                "command": "python3 '"$DEST_DIR"'/hooks/stop.py"
+                "command": $cmd2
             }]' "$CLAUDE_CODE_SETTINGS" > "$tmp" && mv "$tmp" "$CLAUDE_CODE_SETTINGS"
             echo "Added hooks to Claude Code settings"
         else
@@ -121,13 +131,13 @@ else
     "SessionStart": [
       {
         "type": "command",
-        "command": "python3 $DEST_DIR/hooks/session_start.py"
+        "command": "$PYTHON $DEST_DIR/hooks/session_start.py"
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "python3 $DEST_DIR/hooks/stop.py"
+        "command": "$PYTHON $DEST_DIR/hooks/stop.py"
       }
     ]
   }

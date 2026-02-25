@@ -11,6 +11,7 @@ import json
 import hashlib
 import inspect
 import logging
+import struct
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -19,8 +20,13 @@ from contextlib import contextmanager
 import mysql.connector
 from mysql.connector import Error
 from mysql.connector.pooling import MySQLConnectionPool
+import numpy as np
 
 from kanban_export import ExportBuilder, export_to_format
+
+# Lazy imports for embedding - only loaded when needed
+_onnx_session = None
+_tokenizer = None
 
 
 class KanbanDB:
@@ -192,6 +198,13 @@ class KanbanDB:
 
         # Record initial status in history
         self._record_status_change(item_id, None, status_id, 'create')
+
+        # Auto-generate embedding (non-blocking, errors logged)
+        try:
+            self.upsert_embedding('item', item_id)
+        except Exception:
+            pass  # Embedding failure shouldn't block item creation
+
         return item_id
 
     def get_item(self, item_id: int) -> Optional[Dict]:
@@ -613,6 +626,12 @@ class KanbanDB:
 
     def delete_item(self, item_id: int) -> Dict:
         """Delete an item."""
+        # Delete embedding first (before item is deleted)
+        try:
+            self.delete_embedding('item', item_id)
+        except Exception:
+            pass  # Continue with item deletion even if embedding deletion fails
+
         with self._db_cursor(commit=True) as cursor:
             cursor.execute("DELETE FROM items WHERE id = %s", (item_id,))
             return {"success": True, "deleted_id": item_id, "rows_affected": cursor.rowcount}
@@ -654,6 +673,13 @@ class KanbanDB:
             params.append(item_id)
             cursor.execute(query, params)
 
+        # Re-embed if title or description changed
+        if title is not None or description is not None:
+            try:
+                self.upsert_embedding('item', item_id)
+            except Exception:
+                pass  # Embedding failure shouldn't block update
+
         updated_item = self.get_item(item_id)
         return {"success": True, "item": updated_item}
 
@@ -673,7 +699,13 @@ class KanbanDB:
                         (update_id, item_id)
                     )
 
-            return update_id
+        # Auto-generate embedding
+        try:
+            self.upsert_embedding('update', update_id)
+        except Exception:
+            pass  # Embedding failure shouldn't block update creation
+
+        return update_id
 
     def get_latest_update(self, project_id: str) -> Optional[Dict]:
         """Get most recent update for a project."""
@@ -1288,6 +1320,767 @@ class KanbanDB:
             'total_count': len(items) + len(updates)
         }
 
+    # --- File Linking Methods ---
+
+    def link_file(self, item_id: int, file_path: str, line_start: int = None, line_end: int = None) -> Dict[str, Any]:
+        """Link a file (or file region) to an item.
+
+        Args:
+            item_id: The item to link the file to
+            file_path: Relative path to the file
+            line_start: Optional starting line number
+            line_end: Optional ending line number
+
+        Returns:
+            Dict with success status and link_id if successful
+
+        Raises:
+            ValueError: If item doesn't exist
+        """
+        with self._db_cursor(dictionary=True, commit=True) as cursor:
+            # Verify item exists
+            cursor.execute("SELECT id FROM items WHERE id = %s", (item_id,))
+            if not cursor.fetchone():
+                raise ValueError(f"Item {item_id} not found")
+
+            # Check for duplicate link
+            cursor.execute("""
+                SELECT id FROM item_files
+                WHERE item_id = %s AND file_path = %s
+                  AND (line_start IS NULL AND %s IS NULL OR line_start = %s)
+                  AND (line_end IS NULL AND %s IS NULL OR line_end = %s)
+            """, (item_id, file_path, line_start, line_start, line_end, line_end))
+
+            if cursor.fetchone():
+                return {'success': False, 'error': 'Link already exists for this file and line range'}
+
+            # Insert new link
+            cursor.execute("""
+                INSERT INTO item_files (item_id, file_path, line_start, line_end)
+                VALUES (%s, %s, %s, %s)
+            """, (item_id, file_path, line_start, line_end))
+
+            link_id = cursor.lastrowid
+            return {'success': True, 'link_id': link_id}
+
+    def unlink_file(self, item_id: int, file_path: str, line_start: int = None, line_end: int = None) -> Dict[str, Any]:
+        """Remove a file link from an item.
+
+        Args:
+            item_id: The item to unlink the file from
+            file_path: Relative path to the file
+            line_start: Optional starting line number (must match to unlink)
+            line_end: Optional ending line number (must match to unlink)
+
+        Returns:
+            Dict with success status
+        """
+        with self._db_cursor(commit=True) as cursor:
+            cursor.execute("""
+                DELETE FROM item_files
+                WHERE item_id = %s AND file_path = %s
+                  AND (line_start IS NULL AND %s IS NULL OR line_start = %s)
+                  AND (line_end IS NULL AND %s IS NULL OR line_end = %s)
+            """, (item_id, file_path, line_start, line_start, line_end, line_end))
+
+            if cursor.rowcount > 0:
+                return {'success': True}
+            return {'success': False, 'error': 'Link not found'}
+
+    def get_item_files(self, item_id: int) -> List[Dict]:
+        """Get all files linked to an item.
+
+        Args:
+            item_id: The item ID to get files for
+
+        Returns:
+            List of dicts with file_path, line_start, line_end, created_at
+        """
+        with self._db_cursor(dictionary=True) as cursor:
+            cursor.execute("""
+                SELECT id, file_path, line_start, line_end, created_at
+                FROM item_files
+                WHERE item_id = %s
+                ORDER BY file_path, line_start
+            """, (item_id,))
+            return cursor.fetchall()
+
+    # --- Decision History Methods ---
+
+    def add_decision(self, item_id: int, choice: str, rejected_alternatives: str = None,
+                     rationale: str = None) -> Dict[str, Any]:
+        """Add a decision record to an item.
+
+        Args:
+            item_id: The item to attach the decision to
+            choice: What was decided (max 200 chars, required)
+            rejected_alternatives: What was rejected (max 500 chars, optional)
+            rationale: Brief reason for the choice (max 200 chars, optional)
+
+        Returns:
+            Dict with success status and decision_id if successful
+
+        Raises:
+            ValueError: If item doesn't exist or choice exceeds max length
+        """
+        # Validate choice length
+        if len(choice) > 200:
+            raise ValueError(f"Choice exceeds 200 char limit (got {len(choice)})")
+
+        # Validate rejected_alternatives length
+        if rejected_alternatives and len(rejected_alternatives) > 500:
+            raise ValueError(f"Rejected alternatives exceeds 500 char limit (got {len(rejected_alternatives)})")
+
+        # Validate rationale length
+        if rationale and len(rationale) > 200:
+            raise ValueError(f"Rationale exceeds 200 char limit (got {len(rationale)})")
+
+        with self._db_cursor(dictionary=True, commit=True) as cursor:
+            # Verify item exists
+            cursor.execute("SELECT id FROM items WHERE id = %s", (item_id,))
+            if not cursor.fetchone():
+                raise ValueError(f"Item {item_id} not found")
+
+            # Insert decision
+            cursor.execute("""
+                INSERT INTO item_decisions (item_id, choice, rejected_alternatives, rationale)
+                VALUES (%s, %s, %s, %s)
+            """, (item_id, choice, rejected_alternatives, rationale))
+
+            decision_id = cursor.lastrowid
+
+        # Auto-generate embedding
+        try:
+            self.upsert_embedding('decision', decision_id)
+        except Exception:
+            pass  # Embedding failure shouldn't block decision creation
+
+        return {'success': True, 'decision_id': decision_id}
+
+    def get_item_decisions(self, item_id: int) -> List[Dict]:
+        """Get all decisions for an item, ordered by created_at DESC.
+
+        Args:
+            item_id: The item ID to get decisions for
+
+        Returns:
+            List of dicts with id, choice, rejected_alternatives, rationale, created_at
+        """
+        with self._db_cursor(dictionary=True) as cursor:
+            cursor.execute("""
+                SELECT id, item_id, choice, rejected_alternatives, rationale, created_at
+                FROM item_decisions
+                WHERE item_id = %s
+                ORDER BY created_at DESC, id DESC
+            """, (item_id,))
+            return cursor.fetchall()
+
+    def delete_decision(self, decision_id: int) -> Dict[str, Any]:
+        """Delete a decision record.
+
+        Args:
+            decision_id: The decision ID to delete
+
+        Returns:
+            Dict with success status
+        """
+        # Delete embedding first
+        try:
+            self.delete_embedding('decision', decision_id)
+        except Exception:
+            pass
+
+        with self._db_cursor(commit=True) as cursor:
+            cursor.execute("DELETE FROM item_decisions WHERE id = %s", (decision_id,))
+            if cursor.rowcount > 0:
+                return {'success': True, 'deleted_id': decision_id}
+            return {'success': False, 'error': 'Decision not found'}
+
+    # --- Embedding Methods ---
+
+    EMBEDDING_MODEL = 'nomic-embed-text-v1.5'
+    EMBEDDING_DIM = 768
+    VALID_SOURCE_TYPES = ('item', 'decision', 'update')
+
+    def _init_embedding_model(self):
+        """Initialize ONNX embedding model (lazy load)."""
+        global _onnx_session, _tokenizer
+
+        if _onnx_session is not None:
+            return
+
+        try:
+            import onnxruntime as ort
+            from tokenizers import Tokenizer
+            from huggingface_hub import hf_hub_download
+
+            # Try to find model in models/ directory
+            model_dir = Path(__file__).parent / 'models' / 'nomic-embed-text-v1.5'
+
+            if not model_dir.exists():
+                # Download from HuggingFace
+                model_path = hf_hub_download(
+                    repo_id="nomic-ai/nomic-embed-text-v1.5",
+                    filename="onnx/model.onnx"
+                )
+                tokenizer_path = hf_hub_download(
+                    repo_id="nomic-ai/nomic-embed-text-v1.5",
+                    filename="tokenizer.json"
+                )
+            else:
+                model_path = model_dir / 'onnx' / 'model.onnx'
+                tokenizer_path = model_dir / 'tokenizer.json'
+
+            _tokenizer = Tokenizer.from_file(str(tokenizer_path))
+            _tokenizer.enable_truncation(max_length=8192)
+            _tokenizer.enable_padding()
+
+            _onnx_session = ort.InferenceSession(
+                str(model_path),
+                providers=['CPUExecutionProvider']
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to load embedding model: {e}")
+
+    def generate_embedding(self, text: str) -> bytes:
+        """Generate embedding for text, return as packed bytes.
+
+        Args:
+            text: Text to embed
+
+        Returns:
+            bytes: Packed float32 array (768 * 4 = 3072 bytes)
+        """
+        self._init_embedding_model()
+
+        # Tokenize with nomic prefix for search documents
+        # nomic-embed uses "search_document: " prefix for documents
+        prefixed_text = f"search_document: {text}"
+
+        encoded = _tokenizer.encode(prefixed_text)
+
+        # Build numpy arrays for ONNX - add batch dimension
+        input_ids = np.array([encoded.ids], dtype=np.int64)
+        attention_mask = np.array([encoded.attention_mask], dtype=np.int64)
+
+        # Build input dict
+        input_dict = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+
+        # Add token_type_ids if model requires it
+        input_names = [inp.name for inp in _onnx_session.get_inputs()]
+        if "token_type_ids" in input_names:
+            input_dict["token_type_ids"] = np.zeros_like(input_ids, dtype=np.int64)
+
+        # Run inference
+        outputs = _onnx_session.run(None, input_dict)
+
+        # Get embeddings - model outputs [batch, seq_len, hidden] or [batch, hidden]
+        embeddings = outputs[0]
+
+        # Mean pooling over sequence dimension if needed
+        if len(embeddings.shape) == 3:
+            mask_expanded = np.expand_dims(attention_mask, -1)
+            sum_embeddings = np.sum(embeddings * mask_expanded, axis=1)
+            sum_mask = np.clip(np.sum(mask_expanded, axis=1), a_min=1e-9, a_max=None)
+            embeddings = sum_embeddings / sum_mask
+
+        # Normalize to unit vector
+        embeddings = embeddings / np.linalg.norm(embeddings, axis=-1, keepdims=True)
+
+        # Pack as bytes
+        return embeddings[0].astype(np.float32).tobytes()
+
+    def _get_content_for_embedding(self, source_type: str, source_id: int) -> Optional[str]:
+        """Build text to embed based on source type.
+
+        Args:
+            source_type: 'item', 'decision', or 'update'
+            source_id: ID of the source record
+
+        Returns:
+            Text to embed, or None if source not found
+        """
+        if source_type == 'item':
+            item = self.get_item(source_id)
+            if not item:
+                return None
+            parts = [item['title']]
+            if item.get('description'):
+                parts.append(item['description'])
+            return ' '.join(parts)
+
+        elif source_type == 'decision':
+            with self._db_cursor(dictionary=True) as cursor:
+                cursor.execute(
+                    "SELECT choice, rejected_alternatives, rationale FROM item_decisions WHERE id = %s",
+                    (source_id,)
+                )
+                decision = cursor.fetchone()
+                if not decision:
+                    return None
+                parts = [decision['choice']]
+                if decision.get('rejected_alternatives'):
+                    parts.append(f"Rejected: {decision['rejected_alternatives']}")
+                if decision.get('rationale'):
+                    parts.append(f"Rationale: {decision['rationale']}")
+                return ' '.join(parts)
+
+        elif source_type == 'update':
+            with self._db_cursor(dictionary=True) as cursor:
+                cursor.execute("SELECT content FROM updates WHERE id = %s", (source_id,))
+                update = cursor.fetchone()
+                if not update:
+                    return None
+                return update['content']
+
+        return None
+
+    def _compute_content_hash(self, content: str) -> str:
+        """Compute MD5 hash of content for change detection."""
+        return hashlib.md5(content.encode()).hexdigest()
+
+    def upsert_embedding(self, source_type: str, source_id: int) -> Dict[str, Any]:
+        """Generate and store embedding for a source.
+
+        Args:
+            source_type: 'item', 'decision', or 'update'
+            source_id: ID of the source record
+
+        Returns:
+            Dict with success, status ('created', 'updated', 'unchanged'), embedding_id
+        """
+        if source_type not in self.VALID_SOURCE_TYPES:
+            return {'success': False, 'error': f'Invalid source type: {source_type}'}
+
+        # Get content to embed
+        content = self._get_content_for_embedding(source_type, source_id)
+        if content is None:
+            return {'success': False, 'error': f'{source_type} not found: {source_id}'}
+
+        content_hash = self._compute_content_hash(content)
+
+        # Check if embedding exists and is current
+        with self._db_cursor(dictionary=True) as cursor:
+            cursor.execute("""
+                SELECT id, content_hash FROM embeddings
+                WHERE source_type = %s AND source_id = %s AND model = %s
+            """, (source_type, source_id, self.EMBEDDING_MODEL))
+            existing = cursor.fetchone()
+
+        if existing and existing['content_hash'] == content_hash:
+            return {'success': True, 'status': 'unchanged', 'embedding_id': existing['id']}
+
+        # Generate new embedding
+        try:
+            vector = self.generate_embedding(content)
+        except Exception as e:
+            return {'success': False, 'error': f'Embedding generation failed: {e}'}
+
+        # Upsert into database
+        with self._db_cursor(commit=True) as cursor:
+            if existing:
+                cursor.execute("""
+                    UPDATE embeddings SET vector = %s, content_hash = %s, created_at = NOW()
+                    WHERE id = %s
+                """, (vector, content_hash, existing['id']))
+                return {'success': True, 'status': 'updated', 'embedding_id': existing['id']}
+            else:
+                cursor.execute("""
+                    INSERT INTO embeddings (source_type, source_id, content_hash, model, vector)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (source_type, source_id, content_hash, self.EMBEDDING_MODEL, vector))
+                return {'success': True, 'status': 'created', 'embedding_id': cursor.lastrowid}
+
+    def get_embedding(self, source_type: str, source_id: int) -> Optional[Dict]:
+        """Retrieve embedding for a source.
+
+        Args:
+            source_type: 'item', 'decision', or 'update'
+            source_id: ID of the source record
+
+        Returns:
+            Dict with id, source_type, source_id, content_hash, model, vector, created_at
+            or None if not found
+        """
+        with self._db_cursor(dictionary=True) as cursor:
+            cursor.execute("""
+                SELECT id, source_type, source_id, content_hash, model, vector, created_at
+                FROM embeddings
+                WHERE source_type = %s AND source_id = %s AND model = %s
+            """, (source_type, source_id, self.EMBEDDING_MODEL))
+            return cursor.fetchone()
+
+    def delete_embedding(self, source_type: str, source_id: int) -> Dict[str, Any]:
+        """Remove embedding when source is deleted.
+
+        Args:
+            source_type: 'item', 'decision', or 'update'
+            source_id: ID of the source record
+
+        Returns:
+            Dict with success status
+        """
+        with self._db_cursor(commit=True) as cursor:
+            cursor.execute("""
+                DELETE FROM embeddings
+                WHERE source_type = %s AND source_id = %s AND model = %s
+            """, (source_type, source_id, self.EMBEDDING_MODEL))
+            if cursor.rowcount > 0:
+                return {'success': True}
+            return {'success': False, 'error': 'Embedding not found'}
+
+    def semantic_search(self, project_id: str, query: str, limit: int = 10,
+                        source_types: List[str] = None, threshold: float = 0.0) -> List[Dict]:
+        """Search by semantic similarity.
+
+        Args:
+            project_id: Project to search within
+            query: Search query text
+            limit: Maximum results to return
+            source_types: Filter by source types (default: all)
+            threshold: Minimum similarity score (0.0 to 1.0)
+
+        Returns:
+            List of dicts with source_type, source_id, similarity, title/content
+        """
+        # Generate query embedding with search prefix
+        self._init_embedding_model()
+
+        # nomic-embed uses "search_query: " prefix for queries
+        prefixed_query = f"search_query: {query}"
+        encoded = _tokenizer.encode(prefixed_query)
+
+        # Build numpy arrays for ONNX
+        input_ids = np.array([encoded.ids], dtype=np.int64)
+        attention_mask = np.array([encoded.attention_mask], dtype=np.int64)
+
+        input_dict = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+        input_names = [inp.name for inp in _onnx_session.get_inputs()]
+        if "token_type_ids" in input_names:
+            input_dict["token_type_ids"] = np.zeros_like(input_ids, dtype=np.int64)
+
+        outputs = _onnx_session.run(None, input_dict)
+
+        embeddings = outputs[0]
+        if len(embeddings.shape) == 3:
+            mask_expanded = np.expand_dims(attention_mask, -1)
+            sum_embeddings = np.sum(embeddings * mask_expanded, axis=1)
+            sum_mask = np.clip(np.sum(mask_expanded, axis=1), a_min=1e-9, a_max=None)
+            embeddings = sum_embeddings / sum_mask
+
+        embeddings = embeddings / np.linalg.norm(embeddings, axis=-1, keepdims=True)
+        query_vector = embeddings[0].astype(np.float32)
+
+        # Build source type filter
+        if source_types:
+            type_filter = source_types
+        else:
+            type_filter = list(self.VALID_SOURCE_TYPES)
+
+        # Get all embeddings for this project's items
+        # We need to join with items/decisions/updates to filter by project
+        results = []
+
+        with self._db_cursor(dictionary=True) as cursor:
+            for source_type in type_filter:
+                if source_type == 'item':
+                    cursor.execute("""
+                        SELECT e.id, e.source_type, e.source_id, e.vector,
+                               i.title, i.description, it.name as type_name, s.name as status_name
+                        FROM embeddings e
+                        JOIN items i ON e.source_id = i.id
+                        JOIN item_types it ON i.type_id = it.id
+                        JOIN statuses s ON i.status_id = s.id
+                        WHERE e.source_type = 'item' AND e.model = %s AND i.project_id = %s
+                    """, (self.EMBEDDING_MODEL, project_id))
+
+                    for row in cursor.fetchall():
+                        stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
+                        similarity = float(np.dot(query_vector, stored_vector))
+                        if similarity >= threshold:
+                            results.append({
+                                'source_type': 'item',
+                                'source_id': row['source_id'],
+                                'similarity': round(similarity, 4),
+                                'title': row['title'],
+                                'snippet': row['description'][:100] if row['description'] else None,
+                                'type_name': row['type_name'],
+                                'status_name': row['status_name']
+                            })
+
+                elif source_type == 'decision':
+                    cursor.execute("""
+                        SELECT e.id, e.source_type, e.source_id, e.vector,
+                               d.choice, d.item_id
+                        FROM embeddings e
+                        JOIN item_decisions d ON e.source_id = d.id
+                        JOIN items i ON d.item_id = i.id
+                        WHERE e.source_type = 'decision' AND e.model = %s AND i.project_id = %s
+                    """, (self.EMBEDDING_MODEL, project_id))
+
+                    for row in cursor.fetchall():
+                        stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
+                        similarity = float(np.dot(query_vector, stored_vector))
+                        if similarity >= threshold:
+                            results.append({
+                                'source_type': 'decision',
+                                'source_id': row['source_id'],
+                                'similarity': round(similarity, 4),
+                                'title': row['choice'],
+                                'item_id': row['item_id']
+                            })
+
+                elif source_type == 'update':
+                    cursor.execute("""
+                        SELECT e.id, e.source_type, e.source_id, e.vector,
+                               u.content, u.created_at
+                        FROM embeddings e
+                        JOIN updates u ON e.source_id = u.id
+                        WHERE e.source_type = 'update' AND e.model = %s AND u.project_id = %s
+                    """, (self.EMBEDDING_MODEL, project_id))
+
+                    for row in cursor.fetchall():
+                        stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
+                        similarity = float(np.dot(query_vector, stored_vector))
+                        if similarity >= threshold:
+                            results.append({
+                                'source_type': 'update',
+                                'source_id': row['source_id'],
+                                'similarity': round(similarity, 4),
+                                'snippet': row['content'][:100] if row['content'] else None,
+                                'created_at': row['created_at']
+                            })
+
+        # Sort by similarity descending and limit
+        results.sort(key=lambda x: x['similarity'], reverse=True)
+        return results[:limit]
+
+    def find_similar(self, source_type: str, source_id: int, limit: int = 5,
+                     threshold: float = 0.0) -> List[Dict]:
+        """Find items similar to a given source.
+
+        Args:
+            source_type: Type of source to find similar to
+            source_id: ID of source to find similar to
+            limit: Maximum results
+            threshold: Minimum similarity
+
+        Returns:
+            List of similar items (excluding the source itself)
+        """
+        # Get the source embedding
+        embedding = self.get_embedding(source_type, source_id)
+        if not embedding:
+            return []
+
+        source_vector = np.frombuffer(embedding['vector'], dtype=np.float32)
+
+        # Get project_id from the source
+        project_id = None
+        if source_type == 'item':
+            item = self.get_item(source_id)
+            if item:
+                project_id = item['project_id']
+        elif source_type == 'decision':
+            with self._db_cursor(dictionary=True) as cursor:
+                cursor.execute("""
+                    SELECT i.project_id FROM item_decisions d
+                    JOIN items i ON d.item_id = i.id
+                    WHERE d.id = %s
+                """, (source_id,))
+                row = cursor.fetchone()
+                if row:
+                    project_id = row['project_id']
+        elif source_type == 'update':
+            with self._db_cursor(dictionary=True) as cursor:
+                cursor.execute("SELECT project_id FROM updates WHERE id = %s", (source_id,))
+                row = cursor.fetchone()
+                if row:
+                    project_id = row['project_id']
+
+        if not project_id:
+            return []
+
+        # Get all embeddings for comparison
+        results = []
+        with self._db_cursor(dictionary=True) as cursor:
+            # Items
+            cursor.execute("""
+                SELECT e.source_type, e.source_id, e.vector, i.title
+                FROM embeddings e
+                JOIN items i ON e.source_id = i.id AND e.source_type = 'item'
+                WHERE e.model = %s AND i.project_id = %s
+            """, (self.EMBEDDING_MODEL, project_id))
+
+            for row in cursor.fetchall():
+                # Skip self
+                if row['source_type'] == source_type and row['source_id'] == source_id:
+                    continue
+                stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
+                similarity = float(np.dot(source_vector, stored_vector))
+                if similarity >= threshold:
+                    results.append({
+                        'source_type': row['source_type'],
+                        'source_id': row['source_id'],
+                        'similarity': round(similarity, 4),
+                        'title': row['title']
+                    })
+
+            # Decisions
+            cursor.execute("""
+                SELECT e.source_type, e.source_id, e.vector, d.choice
+                FROM embeddings e
+                JOIN item_decisions d ON e.source_id = d.id AND e.source_type = 'decision'
+                JOIN items i ON d.item_id = i.id
+                WHERE e.model = %s AND i.project_id = %s
+            """, (self.EMBEDDING_MODEL, project_id))
+
+            for row in cursor.fetchall():
+                if row['source_type'] == source_type and row['source_id'] == source_id:
+                    continue
+                stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
+                similarity = float(np.dot(source_vector, stored_vector))
+                if similarity >= threshold:
+                    results.append({
+                        'source_type': row['source_type'],
+                        'source_id': row['source_id'],
+                        'similarity': round(similarity, 4),
+                        'title': row['choice']
+                    })
+
+            # Updates
+            cursor.execute("""
+                SELECT e.source_type, e.source_id, e.vector, u.content
+                FROM embeddings e
+                JOIN updates u ON e.source_id = u.id AND e.source_type = 'update'
+                WHERE e.model = %s AND u.project_id = %s
+            """, (self.EMBEDDING_MODEL, project_id))
+
+            for row in cursor.fetchall():
+                if row['source_type'] == source_type and row['source_id'] == source_id:
+                    continue
+                stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
+                similarity = float(np.dot(source_vector, stored_vector))
+                if similarity >= threshold:
+                    results.append({
+                        'source_type': row['source_type'],
+                        'source_id': row['source_id'],
+                        'similarity': round(similarity, 4),
+                        'snippet': row['content'][:100] if row['content'] else None
+                    })
+
+        results.sort(key=lambda x: x['similarity'], reverse=True)
+        return results[:limit]
+
+    def rebuild_embeddings(self, project_id: str, source_types: List[str] = None) -> Dict[str, Any]:
+        """Rebuild all embeddings for a project.
+
+        Args:
+            project_id: Project to rebuild embeddings for
+            source_types: Types to rebuild (default: all)
+
+        Returns:
+            Dict with success, processed count, errors
+        """
+        if source_types is None:
+            source_types = list(self.VALID_SOURCE_TYPES)
+
+        processed = 0
+        errors = []
+
+        with self._db_cursor(dictionary=True) as cursor:
+            if 'item' in source_types:
+                cursor.execute("SELECT id FROM items WHERE project_id = %s", (project_id,))
+                for row in cursor.fetchall():
+                    result = self.upsert_embedding('item', row['id'])
+                    if result['success']:
+                        processed += 1
+                    else:
+                        errors.append(f"item:{row['id']}: {result.get('error')}")
+
+            if 'decision' in source_types:
+                cursor.execute("""
+                    SELECT d.id FROM item_decisions d
+                    JOIN items i ON d.item_id = i.id
+                    WHERE i.project_id = %s
+                """, (project_id,))
+                for row in cursor.fetchall():
+                    result = self.upsert_embedding('decision', row['id'])
+                    if result['success']:
+                        processed += 1
+                    else:
+                        errors.append(f"decision:{row['id']}: {result.get('error')}")
+
+            if 'update' in source_types:
+                cursor.execute("SELECT id FROM updates WHERE project_id = %s", (project_id,))
+                for row in cursor.fetchall():
+                    result = self.upsert_embedding('update', row['id'])
+                    if result['success']:
+                        processed += 1
+                    else:
+                        errors.append(f"update:{row['id']}: {result.get('error')}")
+
+        return {
+            'success': True,
+            'processed': processed,
+            'errors': errors if errors else None
+        }
+
+    def rebuild_all_embeddings(self, source_types: List[str] = None) -> Dict[str, Any]:
+        """Rebuild embeddings for ALL projects.
+
+        Args:
+            source_types: Types to rebuild (default: all)
+
+        Returns:
+            Dict with success, processed count, errors, project_count
+        """
+        if source_types is None:
+            source_types = list(self.VALID_SOURCE_TYPES)
+
+        processed = 0
+        errors = []
+
+        with self._db_cursor(dictionary=True) as cursor:
+            if 'item' in source_types:
+                cursor.execute("SELECT id FROM items")
+                for row in cursor.fetchall():
+                    result = self.upsert_embedding('item', row['id'])
+                    if result['success']:
+                        processed += 1
+                    else:
+                        errors.append(f"item:{row['id']}: {result.get('error')}")
+
+            if 'decision' in source_types:
+                cursor.execute("SELECT id FROM item_decisions")
+                for row in cursor.fetchall():
+                    result = self.upsert_embedding('decision', row['id'])
+                    if result['success']:
+                        processed += 1
+                    else:
+                        errors.append(f"decision:{row['id']}: {result.get('error')}")
+
+            if 'update' in source_types:
+                cursor.execute("SELECT id FROM updates")
+                for row in cursor.fetchall():
+                    result = self.upsert_embedding('update', row['id'])
+                    if result['success']:
+                        processed += 1
+                    else:
+                        errors.append(f"update:{row['id']}: {result.get('error')}")
+
+        return {
+            'success': True,
+            'processed': processed,
+            'errors': errors if errors else None
+        }
+
 
 class KanbanMCPServer:
     """MCP Server for Kanban system."""
@@ -1706,7 +2499,7 @@ class KanbanMCPServer:
 
             Args:
                 format: Output format - 'json', 'yaml', or 'markdown'
-                item_type: Filter by type (issue, feature, epic, todo, diary)
+                item_type: Filter by type (issue, feature, epic, todo, diary, question)
                 status: Filter by status (backlog, todo, in_progress, review, done, closed)
                 item_ids: Comma-separated item IDs to export (overrides type/status filters)
                 include_tags: Include tag data for each item (default: True)
@@ -1796,6 +2589,170 @@ class KanbanMCPServer:
                 "updates": self._serialize_result(results['updates']),
                 "total_count": results['total_count']
             }
+
+        # --- File Linking Tools ---
+
+        @self.tool("link_file")
+        def link_file(item_id: int, file_path: str, line_start: int = None, line_end: int = None) -> Dict[str, Any]:
+            """Link a file (or file region) to an item.
+
+            Args:
+                item_id: The item to link the file to
+                file_path: Relative path to the file
+                line_start: Optional starting line number
+                line_end: Optional ending line number
+
+            Returns:
+                Dict with success status and link_id if successful
+            """
+            try:
+                result = self.db.link_file(item_id, file_path, line_start, line_end)
+                return result
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
+
+        @self.tool("unlink_file")
+        def unlink_file(item_id: int, file_path: str, line_start: int = None, line_end: int = None) -> Dict[str, Any]:
+            """Remove a file link from an item.
+
+            Args:
+                item_id: The item to unlink the file from
+                file_path: Relative path to the file
+                line_start: Optional starting line number (must match to unlink)
+                line_end: Optional ending line number (must match to unlink)
+
+            Returns:
+                Dict with success status
+            """
+            return self.db.unlink_file(item_id, file_path, line_start, line_end)
+
+        @self.tool("get_item_files")
+        def get_item_files(item_id: int) -> Dict[str, Any]:
+            """Get all files linked to an item.
+
+            Args:
+                item_id: The item ID to get files for
+
+            Returns:
+                Dict with success status and list of files
+            """
+            files = self.db.get_item_files(item_id)
+            return {
+                "success": True,
+                "count": len(files),
+                "files": self._serialize_result(files)
+            }
+
+        # --- Decision History Tools ---
+
+        @self.tool("add_decision")
+        def add_decision(item_id: int, choice: str, rejected_alternatives: str = "",
+                         rationale: str = "") -> Dict[str, Any]:
+            """Add a decision record to an item.
+
+            Args:
+                item_id: The item to attach the decision to
+                choice: What was decided (max 200 chars)
+                rejected_alternatives: What was rejected (max 500 chars)
+                rationale: Brief reason for the choice (max 200 chars)
+            """
+            try:
+                result = self.db.add_decision(
+                    item_id,
+                    choice,
+                    rejected_alternatives if rejected_alternatives else None,
+                    rationale if rationale else None
+                )
+                return result
+            except ValueError as e:
+                return {"success": False, "error": str(e)}
+
+        @self.tool("get_item_decisions")
+        def get_item_decisions(item_id: int) -> Dict[str, Any]:
+            """Get all decisions for an item."""
+            decisions = self.db.get_item_decisions(item_id)
+            return {
+                "success": True,
+                "count": len(decisions),
+                "decisions": self._serialize_result(decisions)
+            }
+
+        @self.tool("delete_decision")
+        def delete_decision(decision_id: int) -> Dict[str, Any]:
+            """Delete a decision record."""
+            return self.db.delete_decision(decision_id)
+
+        # --- Semantic Search Tools ---
+
+        @self.tool("semantic_search")
+        def semantic_search(query: str, limit: int = 10, source_types: str = "",
+                           threshold: float = 0.0) -> Dict[str, Any]:
+            """Search items, decisions, and updates by semantic similarity.
+
+            Args:
+                query: Natural language search query
+                limit: Maximum results to return (default: 10)
+                source_types: Comma-separated types to search (item,decision,update). Empty = all
+                threshold: Minimum similarity score 0.0-1.0 (default: 0.0)
+
+            Returns:
+                Dict with success, results list (each with source_type, source_id, similarity, title/snippet)
+            """
+            project_id = self._get_project_id()
+            type_list = [t.strip() for t in source_types.split(',') if t.strip()] if source_types else None
+            results = self.db.semantic_search(
+                project_id=project_id,
+                query=query,
+                limit=limit,
+                source_types=type_list,
+                threshold=threshold
+            )
+            return {
+                "success": True,
+                "results": self._serialize_result(results),
+                "count": len(results)
+            }
+
+        @self.tool("find_similar")
+        def find_similar(source_type: str, source_id: int, limit: int = 5,
+                        threshold: float = 0.0) -> Dict[str, Any]:
+            """Find items similar to a given item, decision, or update.
+
+            Args:
+                source_type: Type of source ('item', 'decision', 'update')
+                source_id: ID of the source to find similar to
+                limit: Maximum results (default: 5)
+                threshold: Minimum similarity 0.0-1.0 (default: 0.0)
+
+            Returns:
+                Dict with success, results list (excluding the source itself)
+            """
+            results = self.db.find_similar(
+                source_type=source_type,
+                source_id=source_id,
+                limit=limit,
+                threshold=threshold
+            )
+            return {
+                "success": True,
+                "results": self._serialize_result(results),
+                "count": len(results)
+            }
+
+        @self.tool("rebuild_embeddings")
+        def rebuild_embeddings(source_types: str = "") -> Dict[str, Any]:
+            """Rebuild all embeddings for the current project.
+
+            Args:
+                source_types: Comma-separated types to rebuild (item,decision,update). Empty = all
+
+            Returns:
+                Dict with success, processed count, and any errors
+            """
+            project_id = self._get_project_id()
+            type_list = [t.strip() for t in source_types.split(',') if t.strip()] if source_types else None
+            result = self.db.rebuild_embeddings(project_id, type_list)
+            return self._serialize_result(result)
 
     async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:
         """Handle MCP JSON-RPC request."""
