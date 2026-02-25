@@ -34,17 +34,26 @@
     </header>
 
     {% if current_project %}
-    <!-- Tag Filter Bar -->
-    <div class="tag-filter-bar" id="tag-filter-bar" style="display: none;">
-        <span class="tag-filter-label">Filter by tags:</span>
-        <div class="active-filters" id="active-filters">
-            <span style="color: var(--text-disabled);">Click tags on cards to filter</span>
+    <!-- Filter Bar -->
+    <div class="filter-bar" id="filter-bar">
+        <!-- Tag Filter Section -->
+        <div class="filter-section" id="tag-filter-section" style="display: none;">
+            <span class="filter-label">Tags:</span>
+            <div class="tag-picker" id="tag-picker"></div>
+            <div class="tag-filter-mode">
+                <button data-mode="any" class="active" onclick="setTagFilterMode('any')" title="Show cards with ANY selected tag">ANY</button>
+                <button data-mode="all" onclick="setTagFilterMode('all')" title="Show cards with ALL selected tags">ALL</button>
+            </div>
+            <button class="icon-btn-small" onclick="openTagManager()" title="Manage Tags">
+                <i class="material-icons">settings</i>
+            </button>
         </div>
-        <div class="tag-filter-mode">
-            <button data-mode="any" class="active" onclick="setTagFilterMode('any')">ANY</button>
-            <button data-mode="all" onclick="setTagFilterMode('all')">ALL</button>
+        <!-- Active Relationship/Epic Filters -->
+        <div class="filter-section" id="other-filters" style="display: none;">
+            <span class="filter-label">Active:</span>
+            <div class="active-filters" id="active-filters"></div>
         </div>
-        <button class="clear-filters-btn" onclick="clearTagFilters()">Clear</button>
+        <button class="clear-filters-btn" id="clear-all-filters-btn" onclick="clearAllFilters()" style="display: none;">Clear All</button>
     </div>
 
     <div class="board-container">
@@ -211,6 +220,9 @@
         <button class="fab" onclick="document.querySelector('.updates-drawer').classList.toggle('open')" title="View Updates">
             <i class="material-icons">history</i>
         </button>
+        <button class="fab secondary" onclick="openTimelineDrawer()" title="View Timeline">
+            <i class="material-icons">timeline</i>
+        </button>
     </div>
 
     <!-- Updates Sidebar -->
@@ -249,6 +261,58 @@
             {% endfor %}
         </div>
     </aside>
+
+    <!-- Timeline Sidebar -->
+    <aside class="timeline-drawer" id="timeline-drawer">
+        <div class="drawer-header">
+            <span class="drawer-title">Activity Timeline</span>
+            <button class="close-btn" onclick="closeTimelineDrawer()">
+                <i class="material-icons">close</i>
+            </button>
+        </div>
+        <div class="timeline-toggle-bar">
+            <button class="timeline-toggle-btn active" data-view="project" onclick="switchTimelineView('project')">
+                <i class="material-icons">folder</i>
+                Project
+            </button>
+            <button class="timeline-toggle-btn" data-view="item" onclick="switchTimelineView('item')" id="timeline-item-btn" disabled>
+                <i class="material-icons">description</i>
+                <span id="timeline-item-label">Item</span>
+            </button>
+        </div>
+        <div class="timeline-filter-bar">
+            <label class="timeline-filter-checkbox">
+                <input type="checkbox" checked data-filter="status_change" onchange="filterTimelineByType()">
+                <span class="filter-dot status-change"></span>
+                Status
+            </label>
+            <label class="timeline-filter-checkbox">
+                <input type="checkbox" checked data-filter="decision" onchange="filterTimelineByType()">
+                <span class="filter-dot decision"></span>
+                Decisions
+            </label>
+            <label class="timeline-filter-checkbox">
+                <input type="checkbox" checked data-filter="update" onchange="filterTimelineByType()">
+                <span class="filter-dot update"></span>
+                Updates
+            </label>
+            <label class="timeline-filter-checkbox">
+                <input type="checkbox" checked data-filter="commit" onchange="filterTimelineByType()">
+                <span class="filter-dot commit"></span>
+                Commits
+            </label>
+        </div>
+        <div class="drawer-content" id="timeline-content">
+            <div class="timeline-loading" id="timeline-loading" style="display: none;">
+                <i class="material-icons spin">sync</i>
+                Loading timeline...
+            </div>
+            <div class="timeline-entries" id="timeline-entries"></div>
+            <div class="empty-state" id="timeline-empty" style="display: none;">
+                No activity yet
+            </div>
+        </div>
+    </aside>
     {% else %}
     <div class="empty-state" style="margin-top: 50px;">
         <i class="material-icons" style="font-size: 48px; margin-bottom: 16px; opacity: 0.5;">dashboard</i><br>
@@ -261,9 +325,14 @@
         <div class="modal">
             <div class="modal-header">
                 <span class="modal-title">Edit Item <span id="edit-item-id"></span></span>
-                <button class="close-btn" onclick="closeModal('edit-modal')">
-                    <i class="material-icons">close</i>
-                </button>
+                <div class="modal-header-actions">
+                    <button class="icon-btn" onclick="openItemTimeline(parseInt(document.getElementById('edit-id').value))" title="View Timeline">
+                        <i class="material-icons">timeline</i>
+                    </button>
+                    <button class="close-btn" onclick="closeModal('edit-modal')">
+                        <i class="material-icons">close</i>
+                    </button>
+                </div>
             </div>
             <div class="modal-body">
                 <input type="hidden" id="edit-id">
@@ -365,6 +434,7 @@
                 </div>
             </div>
             <div class="modal-footer">
+                <button class="btn btn-danger" onclick="confirmDeleteItem()" style="margin-right: auto;">Delete</button>
                 <button class="btn btn-secondary" onclick="closeModal('edit-modal')">Cancel</button>
                 <button class="btn btn-primary" onclick="saveItem()">Save</button>
             </div>
@@ -570,6 +640,26 @@
         </div>
     </div>
 
+    <!-- Tag Manager Modal -->
+    <div class="modal-overlay" id="tag-manager-modal">
+        <div class="modal" style="max-width: 500px;">
+            <div class="modal-header">
+                <span class="modal-title">Manage Tags</span>
+                <button class="close-btn" onclick="closeModal('tag-manager-modal')">
+                    <i class="material-icons">close</i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="tag-manager-list" id="tag-manager-list">
+                    <!-- Tags will be populated here -->
+                </div>
+                <div class="tag-manager-empty" id="tag-manager-empty" style="display: none;">
+                    No tags in this project yet.
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Search Modal -->
     <div class="modal-overlay" id="search-modal">
         <div class="modal" style="max-width: 600px;">
@@ -610,5 +700,6 @@
     </script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
     <script src="{{ url_for('static', filename='dragdrop.js') }}"></script>
+    <script src="{{ url_for('static', filename='timeline.js') }}"></script>
 </body>
 </html>

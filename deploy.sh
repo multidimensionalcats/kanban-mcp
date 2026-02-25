@@ -26,6 +26,8 @@ rsync -av --delete \
     --include='kanban_cli.py' \
     --include='kanban_web.py' \
     --include='kanban_export.py' \
+    --include='git_timeline.py' \
+    --include='timeline_builder.py' \
     --include='hooks/' \
     --include='hooks/*.py' \
     --include='templates/' \

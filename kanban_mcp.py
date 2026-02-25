@@ -968,12 +968,14 @@ class KanbanDB:
             parent_id = None
 
         if parent_id is not None:
-            # Validate parent exists and is in same project
+            # Validate parent exists, is in same project, and is an epic
             parent = self.get_item(parent_id)
             if not parent:
                 return {"success": False, "error": f"Parent item not found: {parent_id}"}
             if parent['project_id'] != item['project_id']:
                 return {"success": False, "error": "Parent must be in the same project"}
+            if parent['type_name'] != 'epic':
+                return {"success": False, "error": "Parent must be an epic"}
 
             # Check for circular reference
             if self._would_create_cycle(item_id, parent_id):
@@ -1134,12 +1136,16 @@ class KanbanDB:
             return cursor.fetchone()
 
     def get_project_tags(self, project_id: str) -> List[Dict]:
-        """Get all tags for a project, ordered by name."""
+        """Get all tags for a project with usage counts, ordered by name."""
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute(
-                "SELECT * FROM tags WHERE project_id = %s ORDER BY name",
-                (project_id,)
-            )
+            cursor.execute("""
+                SELECT t.*, COUNT(it.item_id) as count
+                FROM tags t
+                LEFT JOIN item_tags it ON t.id = it.tag_id
+                WHERE t.project_id = %s
+                GROUP BY t.id
+                ORDER BY t.name
+            """, (project_id,))
             return cursor.fetchall()
 
     def update_tag(self, tag_id: int, name: str = None, color: str = None) -> Dict:
@@ -2081,6 +2087,52 @@ class KanbanDB:
             'errors': errors if errors else None
         }
 
+    # --- Timeline Methods ---
+
+    def get_timeline_data(self, item_id: int = None, project_id: str = None,
+                          limit: int = 100, repo_path: str = None) -> Dict[str, Any]:
+        """Get unified activity timeline for an item or project.
+
+        Aggregates status changes, decisions, updates, and git commits.
+
+        Args:
+            item_id: Get timeline for specific item (optional)
+            project_id: Get timeline for entire project (optional)
+            limit: Maximum entries to return
+            repo_path: Path to git repo for commit history (optional)
+
+        Returns:
+            Dict with success, entries list, and entry_count
+        """
+        from timeline_builder import TimelineBuilder
+        from git_timeline import GitTimelineProvider
+
+        # Initialize git provider if repo path provided
+        git_provider = None
+        if repo_path:
+            git_provider = GitTimelineProvider(repo_path)
+            if not git_provider.is_valid():
+                git_provider = None
+
+        # Build timeline
+        builder = TimelineBuilder(self, git_provider)
+
+        if item_id:
+            entries = builder.build_item_timeline(item_id, limit=limit)
+        elif project_id:
+            entries = builder.build_project_timeline(project_id, limit=limit)
+        else:
+            return {'success': False, 'error': 'Either item_id or project_id required'}
+
+        # Serialize for JSON output
+        serialized = builder.serialize_timeline(entries)
+
+        return {
+            'success': True,
+            'entries': serialized,
+            'entry_count': len(serialized)
+        }
+
 
 class KanbanMCPServer:
     """MCP Server for Kanban system."""
@@ -2752,6 +2804,53 @@ class KanbanMCPServer:
             project_id = self._get_project_id()
             type_list = [t.strip() for t in source_types.split(',') if t.strip()] if source_types else None
             result = self.db.rebuild_embeddings(project_id, type_list)
+            return self._serialize_result(result)
+
+        # --- Timeline Tools ---
+
+        @self.tool("get_item_timeline")
+        def get_item_timeline(item_id: int, limit: int = 100) -> Dict[str, Any]:
+            """Get activity timeline for a specific item.
+
+            Returns unified timeline of status changes, decisions, updates, and git commits.
+
+            Args:
+                item_id: The item to get timeline for
+                limit: Maximum entries to return (default: 100)
+
+            Returns:
+                Dict with success, entries list (sorted by timestamp desc), entry_count
+            """
+            # Get repo path for git integration
+            repo_path = self.current_project_path
+
+            result = self.db.get_timeline_data(
+                item_id=item_id,
+                limit=limit,
+                repo_path=repo_path
+            )
+            return self._serialize_result(result)
+
+        @self.tool("get_project_timeline")
+        def get_project_timeline(limit: int = 100) -> Dict[str, Any]:
+            """Get activity timeline for the entire project.
+
+            Returns unified timeline of all status changes, decisions, updates, and git commits.
+
+            Args:
+                limit: Maximum entries to return (default: 100)
+
+            Returns:
+                Dict with success, entries list (sorted by timestamp desc), entry_count
+            """
+            project_id = self._get_project_id()
+            repo_path = self.current_project_path
+
+            result = self.db.get_timeline_data(
+                project_id=project_id,
+                limit=limit,
+                repo_path=repo_path
+            )
             return self._serialize_result(result)
 
     async def handle_request(self, request: Dict[str, Any]) -> Dict[str, Any]:

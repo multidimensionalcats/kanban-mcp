@@ -29,14 +29,41 @@ async function loadProjectTags() {
         const res = await fetch(`/api/tags?project=${PROJECT_ID}`);
         const data = await res.json();
         projectTags = data.tags || [];
-        // Show filter bar if there are tags
-        const filterBar = document.getElementById('tag-filter-bar');
-        if (filterBar && projectTags.length > 0) {
-            filterBar.style.display = 'flex';
-        }
+        renderTagPicker();
     } catch (err) {
         console.error('Failed to load tags', err);
     }
+}
+
+// Render the tag picker with all project tags
+function renderTagPicker() {
+    const picker = document.getElementById('tag-picker');
+    const section = document.getElementById('tag-filter-section');
+    if (!picker || !section) return;
+
+    picker.replaceChildren();
+
+    if (projectTags.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = 'flex';
+
+    projectTags.forEach(tag => {
+        const badge = document.createElement('span');
+        badge.className = 'tag-badge tag-picker-item';
+        if (activeTagFilters.includes(tag.name)) {
+            badge.classList.add('selected');
+        }
+        badge.dataset.tagName = tag.name;
+        badge.style.cssText = `--tag-color: ${tag.color};`;
+        badge.textContent = tag.name;
+        badge.onclick = () => toggleTagFilter(tag.name);
+        picker.appendChild(badge);
+    });
+
+    updateFilterBarVisibility();
 }
 
 // Toggle a tag in the active filter set
@@ -53,20 +80,24 @@ function toggleTagFilter(tagName) {
 // Apply tag filters to cards
 function applyTagFilters() {
     const cards = document.querySelectorAll('.card');
-    const filterBar = document.getElementById('tag-filter-bar');
 
+    // Update tag picker selection state
+    document.querySelectorAll('.tag-picker-item').forEach(badge => {
+        badge.classList.toggle('selected', activeTagFilters.includes(badge.dataset.tagName));
+    });
+
+    // If no tag filters, show all cards (but respect other active filters)
     if (activeTagFilters.length === 0) {
         cards.forEach(card => card.style.display = '');
-        if (filterBar) filterBar.style.display = projectTags.length > 0 ? 'flex' : 'none';
-        updateFilterUI();
+        // Re-apply other filters if active
+        if (activeEpicFilter !== null) applyEpicFilter();
+        if (activeRelationshipFilter !== null) applyRelationshipFilter();
+        updateFilterBarVisibility();
         return;
     }
 
-    // Show filter bar when filtering
-    if (filterBar) filterBar.style.display = 'flex';
-
     cards.forEach(card => {
-        const tagBadges = card.querySelectorAll('.tag-badge');
+        const tagBadges = card.querySelectorAll('.tag-badge:not(.tag-picker-item)');
         const itemTags = Array.from(tagBadges).map(b => b.dataset.tagName);
 
         let matches = false;
@@ -79,37 +110,16 @@ function applyTagFilters() {
         card.style.display = matches ? '' : 'none';
     });
 
-    updateFilterUI();
+    updateFilterBarVisibility();
 }
 
-// Update the filter bar UI - uses escapeHtml for user content
-function updateFilterUI() {
-    const activeDisplay = document.getElementById('active-filters');
-    if (!activeDisplay) return;
+// Update filter bar visibility based on active filters
+function updateFilterBarVisibility() {
+    const clearBtn = document.getElementById('clear-all-filters-btn');
+    const hasActiveFilters = activeTagFilters.length > 0 || activeEpicFilter !== null || activeRelationshipFilter !== null;
 
-    if (activeTagFilters.length === 0) {
-        activeDisplay.textContent = '';
-        const span = document.createElement('span');
-        span.style.color = 'var(--text-disabled)';
-        span.textContent = 'Click tags on cards to filter';
-        activeDisplay.appendChild(span);
-    } else {
-        activeDisplay.textContent = '';
-        activeTagFilters.forEach(tag => {
-            const tagInfo = projectTags.find(t => t.name === tag);
-            const color = tagInfo ? tagInfo.color : '#666';
-            const badge = document.createElement('span');
-            badge.className = 'tag-badge';
-            badge.style.cssText = `background: ${color}20; color: ${color}; border: 1px solid ${color}40;`;
-            badge.onclick = () => toggleTagFilter(tag);
-            badge.textContent = tag + ' ';
-            const icon = document.createElement('i');
-            icon.className = 'material-icons';
-            icon.style.fontSize = '12px';
-            icon.textContent = 'close';
-            badge.appendChild(icon);
-            activeDisplay.appendChild(badge);
-        });
+    if (clearBtn) {
+        clearBtn.style.display = hasActiveFilters ? '' : 'none';
     }
 }
 
@@ -122,14 +132,25 @@ function setTagFilterMode(mode) {
     applyTagFilters();
 }
 
-// Clear all tag filters
+// Clear only tag filters
 function clearTagFilters() {
+    activeTagFilters = [];
+    applyTagFilters();
+}
+
+// Clear all filters (tags, epic, relationship)
+function clearAllFilters() {
     activeTagFilters = [];
     activeEpicFilter = null;
     activeRelationshipFilter = null;
-    applyTagFilters();
-    applyEpicFilter();
-    applyRelationshipFilter();
+
+    // Show all cards
+    document.querySelectorAll('.card').forEach(card => card.style.display = '');
+
+    // Update UI
+    renderTagPicker();
+    updateOtherFiltersUI();
+    updateFilterBarVisibility();
 }
 
 // --- Epic Filter Functions ---
@@ -140,19 +161,16 @@ function filterByEpic(epicId) {
 
 function applyEpicFilter() {
     const cards = document.querySelectorAll('.card');
-    const filterBar = document.getElementById('tag-filter-bar');
 
     if (activeEpicFilter === null) {
-        // If no tag filters either, show all cards
-        if (activeTagFilters.length === 0) {
+        // If no other filters, show all cards
+        if (activeTagFilters.length === 0 && activeRelationshipFilter === null) {
             cards.forEach(card => card.style.display = '');
         }
-        updateEpicFilterUI();
+        updateOtherFiltersUI();
+        updateFilterBarVisibility();
         return;
     }
-
-    // Show filter bar when filtering by epic
-    if (filterBar) filterBar.style.display = 'flex';
 
     cards.forEach(card => {
         const parentId = card.dataset.parentId;
@@ -160,28 +178,8 @@ function applyEpicFilter() {
         card.style.display = matches ? '' : 'none';
     });
 
-    updateEpicFilterUI();
-}
-
-function updateEpicFilterUI() {
-    const activeDisplay = document.getElementById('active-filters');
-    if (!activeDisplay) return;
-
-    // If epic filter is active, show it
-    if (activeEpicFilter !== null) {
-        activeDisplay.textContent = '';
-        const badge = document.createElement('span');
-        badge.className = 'tag-badge epic-filter-badge';
-        badge.style.cssText = 'background: rgba(251, 191, 36, 0.2); color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.4);';
-        badge.onclick = () => clearEpicFilter();
-        badge.textContent = `Showing children of: Epic #${activeEpicFilter} `;
-        const icon = document.createElement('i');
-        icon.className = 'material-icons';
-        icon.style.fontSize = '12px';
-        icon.textContent = 'close';
-        badge.appendChild(icon);
-        activeDisplay.appendChild(badge);
-    }
+    updateOtherFiltersUI();
+    updateFilterBarVisibility();
 }
 
 function clearEpicFilter() {
@@ -190,16 +188,6 @@ function clearEpicFilter() {
     // Re-apply tag filters if any
     if (activeTagFilters.length > 0) {
         applyTagFilters();
-    } else {
-        // Show default hint
-        const activeDisplay = document.getElementById('active-filters');
-        if (activeDisplay) {
-            activeDisplay.textContent = '';
-            const span = document.createElement('span');
-            span.style.color = 'var(--text-disabled)';
-            span.textContent = 'Click tags on cards to filter';
-            activeDisplay.appendChild(span);
-        }
     }
 }
 
@@ -207,7 +195,6 @@ function clearEpicFilter() {
 let activeRelationshipFilter = null;
 
 function filterByRelationship(sourceItemId, relatedItemIds, relationshipType) {
-    // Include both the source item and all related items
     const allItemIds = [sourceItemId, ...relatedItemIds];
     activeRelationshipFilter = {
         sourceId: sourceItemId,
@@ -220,19 +207,15 @@ function filterByRelationship(sourceItemId, relatedItemIds, relationshipType) {
 
 function applyRelationshipFilter() {
     const cards = document.querySelectorAll('.card');
-    const filterBar = document.getElementById('tag-filter-bar');
 
     if (activeRelationshipFilter === null) {
-        // If no other filters active, show all cards
         if (activeTagFilters.length === 0 && activeEpicFilter === null) {
             cards.forEach(card => card.style.display = '');
         }
-        updateRelationshipFilterUI();
+        updateOtherFiltersUI();
+        updateFilterBarVisibility();
         return;
     }
-
-    // Show filter bar when filtering
-    if (filterBar) filterBar.style.display = 'flex';
 
     cards.forEach(card => {
         const itemId = parseInt(card.dataset.itemId);
@@ -240,47 +223,190 @@ function applyRelationshipFilter() {
         card.style.display = matches ? '' : 'none';
     });
 
-    updateRelationshipFilterUI();
-}
-
-function updateRelationshipFilterUI() {
-    const activeDisplay = document.getElementById('active-filters');
-    if (!activeDisplay) return;
-
-    if (activeRelationshipFilter !== null) {
-        activeDisplay.textContent = '';
-        const badge = document.createElement('span');
-        badge.className = 'tag-badge relationship-filter-badge';
-        badge.style.cssText = 'background: rgba(139, 92, 246, 0.2); color: #a78bfa; border: 1px solid rgba(139, 92, 246, 0.4);';
-        badge.onclick = () => clearRelationshipFilter();
-        badge.textContent = `#${activeRelationshipFilter.sourceId} ${activeRelationshipFilter.type} ${activeRelationshipFilter.relatedIds.map(id => '#' + id).join(', ')} `;
-        const icon = document.createElement('i');
-        icon.className = 'material-icons';
-        icon.style.fontSize = '12px';
-        icon.textContent = 'close';
-        badge.appendChild(icon);
-        activeDisplay.appendChild(badge);
-    }
+    updateOtherFiltersUI();
+    updateFilterBarVisibility();
 }
 
 function clearRelationshipFilter() {
     activeRelationshipFilter = null;
     applyRelationshipFilter();
-    // Re-apply other filters if any
     if (activeTagFilters.length > 0) {
         applyTagFilters();
     } else if (activeEpicFilter !== null) {
         applyEpicFilter();
-    } else {
-        // Show default hint
-        const activeDisplay = document.getElementById('active-filters');
-        if (activeDisplay) {
-            activeDisplay.textContent = '';
-            const span = document.createElement('span');
-            span.style.color = 'var(--text-disabled)';
-            span.textContent = 'Click tags on cards to filter';
-            activeDisplay.appendChild(span);
+    }
+}
+
+// Update the "other filters" section (epic + relationship filters)
+function updateOtherFiltersUI() {
+    const section = document.getElementById('other-filters');
+    const activeDisplay = document.getElementById('active-filters');
+    if (!section || !activeDisplay) return;
+
+    activeDisplay.replaceChildren();
+
+    const hasOtherFilters = activeEpicFilter !== null || activeRelationshipFilter !== null;
+    section.style.display = hasOtherFilters ? 'flex' : 'none';
+
+    // Epic filter badge
+    if (activeEpicFilter !== null) {
+        const badge = document.createElement('span');
+        badge.className = 'filter-badge epic-filter-badge';
+        badge.onclick = () => clearEpicFilter();
+
+        const text = document.createElement('span');
+        text.textContent = `Epic #${activeEpicFilter} children`;
+        badge.appendChild(text);
+
+        const icon = document.createElement('i');
+        icon.className = 'material-icons';
+        icon.textContent = 'close';
+        badge.appendChild(icon);
+
+        activeDisplay.appendChild(badge);
+    }
+
+    // Relationship filter badge
+    if (activeRelationshipFilter !== null) {
+        const badge = document.createElement('span');
+        badge.className = 'filter-badge relationship-filter-badge';
+        badge.onclick = () => clearRelationshipFilter();
+
+        const text = document.createElement('span');
+        text.textContent = `#${activeRelationshipFilter.sourceId} ${activeRelationshipFilter.type} ${activeRelationshipFilter.relatedIds.map(id => '#' + id).join(', ')}`;
+        badge.appendChild(text);
+
+        const icon = document.createElement('i');
+        icon.className = 'material-icons';
+        icon.textContent = 'close';
+        badge.appendChild(icon);
+
+        activeDisplay.appendChild(badge);
+    }
+}
+
+// --- Tag Manager ---
+
+function openTagManager() {
+    openModal('tag-manager-modal');
+    renderTagManagerList();
+}
+
+function renderTagManagerList() {
+    const list = document.getElementById('tag-manager-list');
+    const empty = document.getElementById('tag-manager-empty');
+    if (!list) return;
+
+    list.replaceChildren();
+
+    if (projectTags.length === 0) {
+        empty.style.display = 'block';
+        return;
+    }
+    empty.style.display = 'none';
+
+    projectTags.forEach(tag => {
+        const row = document.createElement('div');
+        row.className = 'tag-manager-row';
+        row.dataset.tagId = tag.id;
+
+        // Color picker
+        const colorPicker = document.createElement('input');
+        colorPicker.type = 'color';
+        colorPicker.className = 'tag-color-picker';
+        colorPicker.value = tag.color;
+        colorPicker.title = 'Change color';
+        colorPicker.onchange = () => updateTagColor(tag.id, colorPicker.value);
+        row.appendChild(colorPicker);
+
+        // Tag name
+        const name = document.createElement('span');
+        name.className = 'tag-manager-name';
+        name.textContent = tag.name;
+        row.appendChild(name);
+
+        // Usage count
+        const count = document.createElement('span');
+        count.className = 'tag-manager-count';
+        count.textContent = `${tag.count || 0} items`;
+        row.appendChild(count);
+
+        // Delete button
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'tag-manager-delete';
+        deleteBtn.title = 'Delete tag';
+        deleteBtn.onclick = () => confirmDeleteTag(tag.id, tag.name, tag.count || 0);
+        const deleteIcon = document.createElement('i');
+        deleteIcon.className = 'material-icons';
+        deleteIcon.textContent = 'delete';
+        deleteBtn.appendChild(deleteIcon);
+        row.appendChild(deleteBtn);
+
+        list.appendChild(row);
+    });
+}
+
+async function updateTagColor(tagId, newColor) {
+    try {
+        const res = await fetch(`/api/tags/${tagId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ color: newColor })
+        });
+        if (res.ok) {
+            // Update local state
+            const tag = projectTags.find(t => t.id === tagId);
+            if (tag) tag.color = newColor;
+            renderTagPicker();
+            showToast('Tag color updated', 'success');
+        } else {
+            showToast('Failed to update tag color', 'error');
         }
+    } catch (err) {
+        console.error('Failed to update tag color:', err);
+        showToast('Failed to update tag color', 'error');
+    }
+}
+
+function confirmDeleteTag(tagId, tagName, itemCount) {
+    const message = itemCount > 0
+        ? `Delete tag "${tagName}"? It will be removed from ${itemCount} item${itemCount > 1 ? 's' : ''}.`
+        : `Delete tag "${tagName}"?`;
+
+    if (confirm(message)) {
+        deleteTag(tagId);
+    }
+}
+
+async function deleteTag(tagId) {
+    try {
+        // Find tag name before deleting from local state
+        const deletedTag = projectTags.find(t => t.id === tagId);
+        const deletedTagName = deletedTag ? deletedTag.name : null;
+
+        const res = await fetch(`/api/tags/${tagId}`, { method: 'DELETE' });
+        if (res.ok) {
+            // Remove from local state
+            projectTags = projectTags.filter(t => t.id !== tagId);
+            activeTagFilters = activeTagFilters.filter(name => name !== deletedTagName);
+
+            // Remove tag badges from all cards
+            if (deletedTagName) {
+                document.querySelectorAll(`.card .tag-badge[data-tag-name="${deletedTagName}"]`).forEach(badge => {
+                    badge.remove();
+                });
+            }
+
+            renderTagManagerList();
+            renderTagPicker();
+            applyTagFilters();
+            showToast('Tag deleted', 'success');
+        } else {
+            showToast('Failed to delete tag', 'error');
+        }
+    } catch (err) {
+        console.error('Failed to delete tag:', err);
+        showToast('Failed to delete tag', 'error');
     }
 }
 
@@ -1001,6 +1127,33 @@ async function saveItem() {
         closeModal('edit-modal');
         showToast('Item updated');
         setTimeout(() => location.reload(), 500);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+// --- Delete Item ---
+
+function confirmDeleteItem() {
+    const itemId = document.getElementById('edit-id').value;
+    const title = document.getElementById('edit-title').value;
+    if (confirm(`Delete item #${itemId} "${title}"? This cannot be undone.`)) {
+        deleteItem(itemId);
+    }
+}
+
+async function deleteItem(itemId) {
+    try {
+        const res = await fetch(`/api/items/${itemId}`, { method: 'DELETE' });
+        const result = await res.json();
+        if (!res.ok || !result.success) {
+            throw new Error(result.error || 'Failed to delete item');
+        }
+        closeModal('edit-modal');
+        showToast('Item deleted');
+        // Remove the card from the board
+        const card = document.querySelector(`.card[data-item-id="${itemId}"]`);
+        if (card) card.remove();
     } catch (err) {
         showToast(err.message, 'error');
     }

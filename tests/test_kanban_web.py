@@ -214,6 +214,24 @@ class TestKanbanWebAPI(unittest.TestCase):
         self.assertFalse(data['success'])
         self.assertIn('blocked', data.get('message', '').lower())
 
+    # --- Delete Item API Tests ---
+
+    def test_api_delete_item(self):
+        """DELETE /api/items/<id> should delete the item."""
+        response = self.client.delete(f'/api/items/{self.test_item_id}')
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data['success'])
+
+        # Verify item is gone
+        item = self.db.get_item(self.test_item_id)
+        self.assertIsNone(item)
+
+    def test_api_delete_item_not_found(self):
+        """DELETE /api/items/<id> should return 404 for non-existent item."""
+        response = self.client.delete('/api/items/99999')
+        self.assertEqual(response.status_code, 404)
+
     # --- Delete Project API Tests ---
 
     def test_api_delete_project(self):

@@ -2415,6 +2415,57 @@ class TestEpicSupport(unittest.TestCase):
         result = self.db.set_parent(item_id, item_id)
         self.assertFalse(result['success'])
 
+    def test_set_parent_non_epic_fails(self):
+        """set_parent should reject non-epic items as parents."""
+        issue_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="issue",
+            title="Not an epic"
+        )
+        child_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="issue",
+            title="Would-be child"
+        )
+
+        result = self.db.set_parent(child_id, issue_id)
+        self.assertFalse(result['success'])
+        self.assertIn('epic', result['error'].lower())
+
+    def test_set_parent_feature_as_parent_fails(self):
+        """set_parent should reject feature items as parents."""
+        feature_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="feature",
+            title="Feature not epic"
+        )
+        child_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="todo",
+            title="Would-be child"
+        )
+
+        result = self.db.set_parent(child_id, feature_id)
+        self.assertFalse(result['success'])
+        self.assertIn('epic', result['error'].lower())
+
+    def test_set_parent_todo_as_parent_fails(self):
+        """set_parent should reject todo items as parents."""
+        todo_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="todo",
+            title="Todo not epic"
+        )
+        child_id = self.db.create_item(
+            project_id=self.test_project_id,
+            type_name="issue",
+            title="Would-be child"
+        )
+
+        result = self.db.set_parent(child_id, todo_id)
+        self.assertFalse(result['success'])
+        self.assertIn('epic', result['error'].lower())
+
 
 class TestEpicMCPTools(unittest.TestCase):
     """Test epic MCP tools."""

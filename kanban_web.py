@@ -35,6 +35,16 @@ def api_get_item(item_id):
     })
 
 
+@app.route('/api/items/<int:item_id>', methods=['DELETE'])
+def api_delete_item(item_id):
+    """Delete an item."""
+    item = db.get_item(item_id)
+    if not item:
+        return jsonify({'success': False, 'error': 'Item not found'}), 404
+    result = db.delete_item(item_id)
+    return jsonify(result)
+
+
 @app.route('/api/items/<int:item_id>', methods=['POST'])
 def api_edit_item(item_id):
     """Edit item (title, description, priority, status)."""
@@ -557,6 +567,56 @@ def api_add_decision(item_id):
 def api_delete_decision(decision_id):
     """Delete a decision."""
     result = db.delete_decision(decision_id)
+    return jsonify(result)
+
+
+# --- Timeline API Routes ---
+
+@app.route('/api/items/<int:item_id>/timeline')
+def api_get_item_timeline(item_id):
+    """Get activity timeline for an item.
+
+    Query params:
+        limit: Maximum entries (default: 100)
+    """
+    try:
+        limit = int(request.args.get('limit', '100'))
+        limit = max(1, min(limit, 500))
+    except ValueError:
+        limit = 100
+
+    # Get project directory for git integration
+    item = db.get_item(item_id)
+    if not item:
+        return jsonify({'error': 'Item not found'}), 404
+
+    project = db.get_project_by_id(item['project_id'])
+    repo_path = project.get('directory_path') if project else None
+
+    result = db.get_timeline_data(item_id=item_id, limit=limit, repo_path=repo_path)
+    return jsonify(result)
+
+
+@app.route('/api/projects/<project_id>/timeline')
+def api_get_project_timeline(project_id):
+    """Get activity timeline for a project.
+
+    Query params:
+        limit: Maximum entries (default: 100)
+    """
+    try:
+        limit = int(request.args.get('limit', '100'))
+        limit = max(1, min(limit, 500))
+    except ValueError:
+        limit = 100
+
+    project = db.get_project_by_id(project_id)
+    if not project:
+        return jsonify({'error': 'Project not found'}), 404
+
+    repo_path = project.get('directory_path')
+
+    result = db.get_timeline_data(project_id=project_id, limit=limit, repo_path=repo_path)
     return jsonify(result)
 
 
