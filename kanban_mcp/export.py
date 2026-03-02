@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Kanban Export Module
-Provides multi-format export functionality (JSON, YAML, Markdown) for kanban data.
+Provides multi-format export functionality
+(JSON, YAML, Markdown) for kanban data.
 """
 
 import json
@@ -47,11 +48,14 @@ class ExportBuilder:
 
         Args:
             item_ids: Optional list of specific item IDs to include
-            item_type: Filter by item type (issue, feature, epic, todo, diary, question)
-            status: Filter by status (backlog, todo, in_progress, review, done, closed)
+            item_type: Filter by item type
+                (issue, feature, epic, todo, diary, question)
+            status: Filter by status
+                (backlog, todo, in_progress, review, done, closed)
             include_tags: Include tag data for each item
             include_relationships: Include relationship data
-            include_metrics: Include calculated metrics (lead_time, cycle_time, etc.)
+            include_metrics: Include calculated metrics
+                (lead_time, cycle_time, etc.)
             include_updates: Include project updates
             include_epic_progress: Include epic progress stats
             include_decisions: Include decision history for items
@@ -62,8 +66,14 @@ class ExportBuilder:
         """
         # Build metadata
         metadata = {
-            "project_name": self.project['name'] if self.project else "Unknown",
-            "project_path": self.project['directory_path'] if self.project else None,
+            "project_name": (
+                self.project['name'] if self.project
+                else "Unknown"
+            ),
+            "project_path": (
+                self.project['directory_path']
+                if self.project else None
+            ),
             "exported_at": datetime.now().isoformat(),
             "filters": {
                 "item_ids": item_ids,
@@ -177,7 +187,9 @@ class ExportBuilder:
                 processed["metrics"] = {
                     "lead_time": metrics.get('lead_time'),
                     "cycle_time": metrics.get('cycle_time'),
-                    "time_in_each_status": metrics.get('time_in_each_status', {}),
+                    "time_in_each_status": metrics.get(
+                        'time_in_each_status', {}
+                    ),
                     "revert_count": metrics.get('revert_count', 0),
                     "current_age": metrics.get('current_age')
                 }
@@ -275,7 +287,10 @@ def format_yaml(data: Dict[str, Any]) -> str:
         raise ImportError(
             "YAML export requires pyyaml. Install with: pip install pyyaml"
         )
-    return yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return yaml.dump(
+        data, default_flow_style=False,
+        allow_unicode=True, sort_keys=False
+    )
 
 
 def format_markdown(data: Dict[str, Any], detailed: bool = False) -> str:
@@ -341,7 +356,10 @@ def format_markdown(data: Dict[str, Any], detailed: bool = False) -> str:
     by_status = summary.get("by_status", {})
     if by_status:
         lines.append("### By Status")
-        status_order = ['backlog', 'todo', 'in_progress', 'review', 'done', 'closed']
+        status_order = [
+            'backlog', 'todo', 'in_progress',
+            'review', 'done', 'closed'
+        ]
         for status in status_order:
             if status in by_status:
                 lines.append(f"- **{status}:** {by_status[status]}")
@@ -369,13 +387,17 @@ def format_markdown(data: Dict[str, Any], detailed: bool = False) -> str:
         type_order = ['epic', 'feature', 'issue', 'todo', 'diary']
         for type_name in type_order:
             if type_name in items_by_type:
-                lines.extend(_format_items_table(type_name, items_by_type[type_name]))
+                lines.extend(_format_items_table(
+                    type_name, items_by_type[type_name]
+                ))
                 lines.append("")
 
         # Any types not in the standard order
         for type_name in sorted(items_by_type.keys()):
             if type_name not in type_order:
-                lines.extend(_format_items_table(type_name, items_by_type[type_name]))
+                lines.extend(_format_items_table(
+                    type_name, items_by_type[type_name]
+                ))
                 lines.append("")
 
     # Updates section
@@ -427,13 +449,24 @@ def _format_items_table(type_name: str, items: List[Dict]) -> List[str]:
 
     # Rows
     for item in items:
-        title = item['title'][:50] + "..." if len(item['title']) > 50 else item['title']
+        title = (
+            item['title'][:50] + "..."
+            if len(item['title']) > 50
+            else item['title']
+        )
         # Escape pipe characters in title
         title = title.replace("|", "\\|")
-        row = f"| #{item['id']} | {title} | {item['status_name']} | P{item['priority']} |"
+        row = (
+            f"| #{item['id']} | {title} "
+            f"| {item['status_name']} "
+            f"| P{item['priority']} |"
+        )
 
         if has_complexity:
-            complexity = f"C{item['complexity']}" if item.get('complexity') else "-"
+            complexity = (
+                f"C{item['complexity']}"
+                if item.get('complexity') else "-"
+            )
             row += f" {complexity} |"
 
         if has_tags:
@@ -501,9 +534,17 @@ def _format_item_detailed(item: Dict) -> List[str]:
             lines.append("")
             lines.append("**Relationships:**")
             for rel in rels.get('outgoing', []):
-                lines.append(f"  - {rel['type']} → #{rel['target_id']} ({rel['target_title']})")
+                lines.append(
+                    f"  - {rel['type']} "
+                    f"→ #{rel['target_id']} "
+                    f"({rel['target_title']})"
+                )
             for rel in rels.get('incoming', []):
-                lines.append(f"  - #{rel['source_id']} ({rel['source_title']}) → {rel['type']}")
+                lines.append(
+                    f"  - #{rel['source_id']} "
+                    f"({rel['source_title']}) "
+                    f"→ {rel['type']}"
+                )
 
     # Metrics
     if item.get('metrics'):
@@ -523,11 +564,21 @@ def _format_item_detailed(item: Dict) -> List[str]:
     if item.get('epic_progress'):
         prog = item['epic_progress']
         lines.append("")
-        lines.append(f"**Epic Progress:** {prog['completed']}/{prog['total']} ({prog['percent']}%)")
+        lines.append(
+            f"**Epic Progress:** "
+            f"{prog['completed']}/{prog['total']} "
+            f"({prog['percent']}%)"
+        )
         if prog.get('incomplete_items'):
-            incomplete = ', '.join(f"#{i}" for i in prog['incomplete_items'][:10])
+            incomplete = ', '.join(
+                f"#{i}"
+                for i in prog['incomplete_items'][:10]
+            )
             if len(prog['incomplete_items']) > 10:
-                incomplete += f" ... ({len(prog['incomplete_items']) - 10} more)"
+                incomplete += (
+                    f" ... ({len(prog['incomplete_items']) - 10}"
+                    " more)"
+                )
             lines.append(f"  - Incomplete: {incomplete}")
 
     # Decision history
@@ -572,7 +623,10 @@ def export_to_format(
     elif format in ("markdown", "md"):
         return format_markdown(data, detailed=detailed)
     else:
-        raise ValueError(f"Unsupported format: {format}. Use 'json', 'yaml', or 'markdown'")
+        raise ValueError(
+            f"Unsupported format: {format}. "
+            "Use 'json', 'yaml', or 'markdown'"
+        )
 
 
 def get_mime_type(format: str) -> str:

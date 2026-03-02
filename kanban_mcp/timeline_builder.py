@@ -44,7 +44,10 @@ class TimelineBuilder:
     - Git commits (via GitTimelineProvider)
     """
 
-    def __init__(self, db: 'KanbanDB', git_provider: Optional['GitTimelineProvider'] = None):
+    def __init__(
+        self, db: 'KanbanDB',
+        git_provider: Optional['GitTimelineProvider'] = None
+    ):
         """Initialize the timeline builder.
 
         Args:
@@ -71,11 +74,19 @@ class TimelineBuilder:
             if entry['change_type'] == 'create':
                 title = f"Created in {entry['new_status']}"
             elif entry['change_type'] == 'revert':
-                title = f"Reverted from {entry['old_status']} to {entry['new_status']}"
+                title = (
+                    f"Reverted from {entry['old_status']}"
+                    f" to {entry['new_status']}"
+                )
             elif entry['change_type'] == 'set':
-                title = f"Status set to {entry['new_status']}"
+                title = (
+                    f"Status set to {entry['new_status']}"
+                )
             else:  # advance
-                title = f"Moved from {entry['old_status']} to {entry['new_status']}"
+                title = (
+                    f"Moved from {entry['old_status']}"
+                    f" to {entry['new_status']}"
+                )
 
             entries.append({
                 'timestamp': entry['changed_at'],
@@ -111,7 +122,11 @@ class TimelineBuilder:
                 'timestamp': decision['created_at'],
                 'activity_type': 'decision',
                 'item_id': item_id,
-                'title': f"Decision: {decision['choice'][:50]}{'...' if len(decision['choice']) > 50 else ''}",
+                'title': (
+                    "Decision: "
+                    f"{decision['choice'][:50]}"
+                    f"{'...' if len(decision['choice']) > 50 else ''}"
+                ),
                 'details': {
                     'decision_id': decision['id'],
                     'choice': decision['choice'],
@@ -125,8 +140,11 @@ class TimelineBuilder:
 
         return entries
 
-    def _get_update_activities(self, item_id: int = None, project_id: str = None,
-                               limit: int = 100) -> List[Dict[str, Any]]:
+    def _get_update_activities(
+        self, item_id: int = None,
+        project_id: str = None,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
         """Get update activities for an item or project.
 
         Args:
@@ -153,8 +171,10 @@ class TimelineBuilder:
             elif project_id:
                 # Get all updates for project
                 cursor.execute("""
-                    SELECT u.id, u.content, u.created_at,
-                           GROUP_CONCAT(ui.item_id) as linked_items
+                    SELECT u.id, u.content,
+                           u.created_at,
+                           GROUP_CONCAT(ui.item_id)
+                               as linked_items
                     FROM updates u
                     LEFT JOIN update_items ui ON u.id = ui.update_id
                     WHERE u.project_id = %s
@@ -170,9 +190,13 @@ class TimelineBuilder:
         for update in updates:
             # Truncate content for title
             content = update['content']
-            truncated = content[:60] + '...' if len(content) > 60 else content
+            truncated = (
+                content[:60] + '...'
+                if len(content) > 60 else content
+            )
 
-            # Parse linked_items from GROUP_CONCAT (may be None, empty, or have gaps)
+            # Parse linked_items from GROUP_CONCAT
+            # (may be None, empty, or have gaps)
             linked_items_str = update.get('linked_items') or ''
             parsed_linked = []
             first_linked = None
@@ -185,7 +209,10 @@ class TimelineBuilder:
                         if first_linked is None:
                             first_linked = val
                     except (ValueError, TypeError):
-                        logger.debug("Non-numeric linked_items value: %r", part)
+                        logger.debug(
+                            "Non-numeric linked_items"
+                            " value: %r", part
+                        )
 
             entry = {
                 'timestamp': update['created_at'],
@@ -205,12 +232,16 @@ class TimelineBuilder:
 
         return entries
 
-    def _get_commit_activities(self, item_id: int = None, project_wide: bool = False,
-                               limit: int = 50) -> List[Dict[str, Any]]:
+    def _get_commit_activities(
+        self, item_id: int = None,
+        project_wide: bool = False,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
         """Get git commit activities.
 
         Args:
-            item_id: Get commits for specific item (by message refs and linked files)
+            item_id: Get commits for specific item
+                (by message refs and linked files)
             project_wide: Get all project commits
             limit: Maximum commits to return
 
@@ -233,7 +264,12 @@ class TimelineBuilder:
             linked_files = self.db.get_item_files(item_id)
             if linked_files:
                 file_paths = [f['file_path'] for f in linked_files]
-                file_commits = self.git_provider.get_commits_for_linked_files(file_paths, limit=limit)
+                file_commits = (
+                    self.git_provider
+                    .get_commits_for_linked_files(
+                        file_paths, limit=limit
+                    )
+                )
 
                 # Merge and dedupe
                 seen_shas = {c['sha'] for c in commits}
@@ -257,7 +293,9 @@ class TimelineBuilder:
                     'author_email': commit.get('author_email'),
                     'files': commit.get('files', []),
                     'matched_ref': commit.get('matched_ref'),
-                    'matched_via': commit.get('matched_via', 'message_ref')
+                    'matched_via': commit.get(
+                        'matched_via', 'message_ref'
+                    )
                 },
                 'actor': commit['author'],
                 'icon': ACTIVITY_ICONS['commit'],
@@ -267,7 +305,9 @@ class TimelineBuilder:
 
         return entries
 
-    def build_item_timeline(self, item_id: int, limit: int = 100) -> List[Dict[str, Any]]:
+    def build_item_timeline(
+        self, item_id: int, limit: int = 100
+    ) -> List[Dict[str, Any]]:
         """Build unified timeline for a specific item.
 
         Aggregates:
@@ -287,15 +327,21 @@ class TimelineBuilder:
         activities = []
         activities.extend(self._get_status_activities(item_id))
         activities.extend(self._get_decision_activities(item_id))
-        activities.extend(self._get_update_activities(item_id=item_id, limit=limit))
-        activities.extend(self._get_commit_activities(item_id=item_id, limit=limit))
+        activities.extend(self._get_update_activities(
+            item_id=item_id, limit=limit
+        ))
+        activities.extend(self._get_commit_activities(
+            item_id=item_id, limit=limit
+        ))
 
         # Sort by timestamp descending (most recent first)
         activities.sort(key=lambda x: x['timestamp'], reverse=True)
 
         return activities[:limit]
 
-    def build_project_timeline(self, project_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def build_project_timeline(
+        self, project_id: str, limit: int = 100
+    ) -> List[Dict[str, Any]]:
         """Build unified timeline for an entire project.
 
         Aggregates:
@@ -320,17 +366,23 @@ class TimelineBuilder:
             activities.extend(self._get_decision_activities(item['id']))
 
         # Get project updates
-        activities.extend(self._get_update_activities(project_id=project_id, limit=limit))
+        activities.extend(self._get_update_activities(
+            project_id=project_id, limit=limit
+        ))
 
         # Get project-wide commits
-        activities.extend(self._get_commit_activities(project_wide=True, limit=limit))
+        activities.extend(self._get_commit_activities(
+            project_wide=True, limit=limit
+        ))
 
         # Sort by timestamp descending (most recent first)
         activities.sort(key=lambda x: x['timestamp'], reverse=True)
 
         return activities[:limit]
 
-    def serialize_timeline(self, entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def serialize_timeline(
+        self, entries: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Serialize timeline entries for JSON output.
 
         Converts datetime objects to ISO format strings.
@@ -344,7 +396,11 @@ class TimelineBuilder:
         serialized = []
         for entry in entries:
             serialized_entry = dict(entry)
-            if isinstance(serialized_entry['timestamp'], datetime):
-                serialized_entry['timestamp'] = serialized_entry['timestamp'].isoformat()
+            if isinstance(
+                serialized_entry['timestamp'], datetime
+            ):
+                serialized_entry['timestamp'] = (
+                    serialized_entry['timestamp'].isoformat()
+                )
             serialized.append(serialized_entry)
         return serialized
