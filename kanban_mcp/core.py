@@ -11,14 +11,11 @@ import json
 import hashlib
 import inspect
 import logging
-import struct
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from contextlib import contextmanager
 
-import mysql.connector
-from mysql.connector import Error
 from mysql.connector.pooling import MySQLConnectionPool
 try:
     import numpy as np
@@ -31,12 +28,16 @@ from kanban_mcp.export import ExportBuilder, export_to_format
 def get_config_dir() -> Path:
     """Return the user config directory for kanban-mcp.
 
-    - Linux/macOS: $XDG_CONFIG_HOME/kanban-mcp (defaults to ~/.config/kanban-mcp)
+    - Linux/macOS: $XDG_CONFIG_HOME/kanban-mcp
+      (defaults to ~/.config/kanban-mcp)
     - Windows: %APPDATA%/kanban-mcp
     """
     if sys.platform == 'win32':
         return Path(os.environ.get('APPDATA', '')) / 'kanban-mcp'
-    return Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'kanban-mcp'
+    return Path(
+        os.environ.get(
+            'XDG_CONFIG_HOME',
+            Path.home() / '.config')) / 'kanban-mcp'
 
 
 # Load .env file if present (checks multiple locations, first found wins)
@@ -80,7 +81,8 @@ class KanbanDB:
                  password: str = None, database: str = None,
                  pool_size: int = None):
         resolved_user = user or os.environ.get("KANBAN_DB_USER", "")
-        resolved_password = password or os.environ.get("KANBAN_DB_PASSWORD", "")
+        resolved_password = password or os.environ.get(
+            "KANBAN_DB_PASSWORD", "")
         resolved_database = database or os.environ.get("KANBAN_DB_NAME", "")
 
         missing = []
@@ -92,8 +94,10 @@ class KanbanDB:
             missing.append("KANBAN_DB_NAME")
         if missing:
             raise ValueError(
-                f"Missing required database credentials: {', '.join(missing)}. "
-                "Set them as environment variables or pass to constructor."
+                "Missing required database credentials:"
+                f" {', '.join(missing)}. "
+                "Set them as environment variables or "
+                "pass to constructor."
             )
 
         self.config = {
@@ -111,7 +115,7 @@ class KanbanDB:
             pool_size=pool_size,
             **self.config
         )
-    
+
     def _get_connection(self):
         """Get a database connection from the pool."""
         return self._pool.get_connection()
@@ -157,13 +161,14 @@ class KanbanDB:
         try:
             getattr(self, op)(source_type, source_id)
         except Exception:
-            logger.debug("Embedding %s failed for %s:%s", op, source_type, source_id, exc_info=True)
+            logger.debug("Embedding %s failed for %s:%s", op,
+                         source_type, source_id, exc_info=True)
 
     @staticmethod
     def hash_project_path(directory_path: str) -> str:
         """Generate a 16-char hash ID from directory path."""
         return hashlib.sha256(directory_path.encode()).hexdigest()[:16]
-    
+
     def ensure_project(self, directory_path: str, name: str = None) -> str:
         """Ensure project exists, create if not. Returns project_id."""
         project_id = self.hash_project_path(directory_path)
@@ -172,28 +177,32 @@ class KanbanDB:
 
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "INSERT IGNORE INTO projects (id, directory_path, name) VALUES (%s, %s, %s)",
-                (project_id, directory_path, name)
-            )
+                "INSERT IGNORE INTO projects"
+                " (id, directory_path, name)"
+                " VALUES (%s, %s, %s)",
+                (project_id, directory_path, name))
             return project_id
-    
+
     def get_project_by_path(self, directory_path: str) -> Optional[Dict]:
         """Get project by directory path."""
         project_id = self.hash_project_path(directory_path)
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT * FROM projects WHERE id = %s", (project_id,))
+            cursor.execute(
+                "SELECT * FROM projects WHERE id = %s", (project_id,))
             return cursor.fetchone()
 
     def get_project_by_id(self, project_id: str) -> Optional[Dict]:
         """Get project by ID."""
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT * FROM projects WHERE id = %s", (project_id,))
+            cursor.execute(
+                "SELECT * FROM projects WHERE id = %s", (project_id,))
             return cursor.fetchone()
 
     def get_type_id(self, type_name: str) -> int:
         """Get item_type id by name."""
         with self._db_cursor() as cursor:
-            cursor.execute("SELECT id FROM item_types WHERE name = %s", (type_name,))
+            cursor.execute(
+                "SELECT id FROM item_types WHERE name = %s", (type_name,))
             result = cursor.fetchone()
             if result:
                 return result[0]
@@ -202,19 +211,22 @@ class KanbanDB:
     def get_status_id(self, status_name: str) -> int:
         """Get status id by name."""
         with self._db_cursor() as cursor:
-            cursor.execute("SELECT id FROM statuses WHERE name = %s", (status_name,))
+            cursor.execute(
+                "SELECT id FROM statuses WHERE name = %s", (status_name,))
             result = cursor.fetchone()
             if result:
                 return result[0]
             raise ValueError(f"Unknown status: {status_name}")
-    
+
     def get_default_status_for_type(self, type_id: int) -> int:
         """Get the first status in workflow for a type."""
         with self._db_cursor() as cursor:
             cursor.execute(
-                "SELECT status_id FROM type_status_workflow WHERE type_id = %s ORDER BY sequence LIMIT 1",
-                (type_id,)
-            )
+                "SELECT status_id"
+                " FROM type_status_workflow"
+                " WHERE type_id = %s"
+                " ORDER BY sequence LIMIT 1",
+                (type_id,))
             result = cursor.fetchone()
             if result:
                 return result[0]
@@ -248,9 +260,17 @@ class KanbanDB:
 
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                """INSERT INTO items (project_id, type_id, status_id, title, description, priority, complexity, parent_id)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
-                (project_id, type_id, status_id, title, description, priority, complexity, parent_id)
+                """INSERT INTO items
+                (project_id, type_id, status_id,
+                 title, description, priority,
+                 complexity, parent_id)
+                VALUES
+                (%s, %s, %s, %s,
+                 %s, %s, %s, %s)""",
+                (project_id, type_id,
+                 status_id, title,
+                 description, priority,
+                 complexity, parent_id)
             )
             item_id = cursor.lastrowid
 
@@ -266,7 +286,10 @@ class KanbanDB:
         """Get item with type and status names."""
         with self._db_cursor(dictionary=True) as cursor:
             cursor.execute("""
-                SELECT i.*, it.name as type_name, s.name as status_name, p.name as project_name
+                SELECT i.*,
+                    it.name as type_name,
+                    s.name as status_name,
+                    p.name as project_name
                 FROM items i
                 JOIN item_types it ON i.type_id = it.id
                 JOIN statuses s ON i.status_id = s.id
@@ -278,7 +301,7 @@ class KanbanDB:
             if result and 'parent_id' not in result:
                 result['parent_id'] = None
             return result
-    
+
     def list_items(self, project_id: str = None, type_name: str = None,
                    status_name: str = None, tag_names: List[str] = None,
                    tag_match_mode: str = "any", limit: int = 50) -> List[Dict]:
@@ -305,7 +328,10 @@ class KanbanDB:
         with self._db_cursor(dictionary=True) as cursor:
             # Base query
             query = """
-                SELECT DISTINCT i.*, it.name as type_name, s.name as status_name, p.name as project_name
+                SELECT DISTINCT i.*,
+                    it.name as type_name,
+                    s.name as status_name,
+                    p.name as project_name
                 FROM items i
                 JOIN item_types it ON i.type_id = it.id
                 JOIN statuses s ON i.status_id = s.id
@@ -315,7 +341,12 @@ class KanbanDB:
 
             # Add tag filtering join if needed (for 'any' mode)
             if tag_names and tag_match_mode == "any":
-                query += " JOIN item_tags itg ON i.id = itg.item_id JOIN tags t ON itg.tag_id = t.id"
+                query += (
+                    " JOIN item_tags itg"
+                    " ON i.id = itg.item_id"
+                    " JOIN tags t"
+                    " ON itg.tag_id = t.id"
+                )
 
             query += " WHERE 1=1"
 
@@ -346,7 +377,7 @@ class KanbanDB:
                             GROUP BY item_id
                             HAVING COUNT(DISTINCT t2.name) = %s
                         )
-                    """
+                    """  # nosec B608 - placeholders are %s params
                     params.extend(tag_names)
                     params.append(len(tag_names))
 
@@ -361,15 +392,20 @@ class KanbanDB:
         """Record a status change in status_history table."""
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                """INSERT INTO status_history (item_id, old_status_id, new_status_id, change_type)
-                   VALUES (%s, %s, %s, %s)""",
-                (item_id, old_status_id, new_status_id, change_type)
-            )
+                """INSERT INTO status_history
+                (item_id, old_status_id,
+                 new_status_id, change_type)
+                VALUES (%s, %s, %s, %s)""",
+                (item_id, old_status_id, new_status_id, change_type))
 
     def get_status_history(self, item_id: int) -> List[Dict]:
-        """Get status history for an item, ordered chronologically (oldest first).
+        """Get status history for an item.
 
-        Returns list of dicts with: id, item_id, old_status, new_status, change_type, changed_at
+        Ordered chronologically (oldest first).
+
+        Returns list of dicts with: id, item_id,
+        old_status, new_status, change_type,
+        changed_at
         """
         with self._db_cursor(dictionary=True) as cursor:
             cursor.execute("""
@@ -389,7 +425,8 @@ class KanbanDB:
 
         Returns dict with:
             lead_time: Hours from creation to done/closed (None if not closed)
-            cycle_time: Hours from first in_progress to done/closed (None if not done)
+            cycle_time: Hours from first in_progress
+                to done/closed (None if not done)
             time_in_each_status: Dict of {status_name: hours}
             revert_count: Number of revert operations
             current_age: Hours since creation (or until closure if closed)
@@ -410,23 +447,29 @@ class KanbanDB:
         first_done_at = None
         first_in_progress = None
         for entry in history:
-            if entry['new_status'] in ('done', 'closed') and first_done_at is None:
+            if entry['new_status'] in (
+                    'done', 'closed') and first_done_at is None:
                 first_done_at = entry['changed_at']
-            if entry['new_status'] == 'in_progress' and first_in_progress is None:
+            if (entry['new_status'] == 'in_progress'
+                    and first_in_progress is None):
                 first_in_progress = entry['changed_at']
 
-        # Use closed_at if available, otherwise use first done timestamp from history
+        # Use closed_at if available, otherwise use first done timestamp from
+        # history
         completion_time = closed_at or first_done_at
 
         # Lead time: creation to done/closed
         lead_time = None
         if completion_time:
-            lead_time = round((completion_time - created_at).total_seconds() / 3600, 2)
+            lead_time = round(
+                (completion_time - created_at).total_seconds() / 3600, 2)
 
         # Cycle time: first in_progress to done/closed
         cycle_time = None
         if first_in_progress and completion_time:
-            cycle_time = round((completion_time - first_in_progress).total_seconds() / 3600, 2)
+            cycle_time = round(
+                (completion_time - first_in_progress
+                 ).total_seconds() / 3600, 2)
 
         # Time in each status
         time_in_status = {}
@@ -441,10 +484,12 @@ class KanbanDB:
                 end_time = completion_time if completion_time else now
 
             hours = (end_time - start_time).total_seconds() / 3600
-            time_in_status[status] = round(time_in_status.get(status, 0) + hours, 2)
+            time_in_status[status] = round(
+                time_in_status.get(status, 0) + hours, 2)
 
         # Revert count
-        revert_count = sum(1 for entry in history if entry['change_type'] == 'revert')
+        revert_count = sum(
+            1 for entry in history if entry['change_type'] == 'revert')
 
         # Current age
         end_time = completion_time if completion_time else now
@@ -460,7 +505,10 @@ class KanbanDB:
             'current_age': current_age
         }
 
-    def _check_blocking_constraint(self, item_id: int, target_status_name: str) -> Optional[Dict]:
+    def _check_blocking_constraint(
+            self,
+            item_id: int,
+            target_status_name: str) -> Optional[Dict]:
         """Check if item can transition to target status.
 
         Args:
@@ -478,12 +526,16 @@ class KanbanDB:
         # Check relationship blockers
         blockers = self.get_blocking_items(item_id)
         if blockers:
-            blocker_info = ", ".join([f"#{b['id']} ({b['reason']})" for b in blockers])
+            blocker_info = ", ".join(
+                [f"#{b['id']} ({b['reason']})" for b in blockers])
             return {
                 "success": False,
-                "message": f"Cannot transition to {target_status_name}: blocked by {blocker_info}",
-                "blockers": blockers
-            }
+                "message": (
+                    f"Cannot transition to "
+                    f"{target_status_name}: "
+                    f"blocked by {blocker_info}"
+                ),
+                "blockers": blockers}
 
         # Check epic closure constraint (only for 'closed' status)
         if target_status_name == 'closed':
@@ -521,10 +573,14 @@ class KanbanDB:
             next_status = cursor.fetchone()
 
         if not next_status:
-            return {"success": False, "message": "Already at final status", "current_status": item['status_name']}
+            return {
+                "success": False,
+                "message": "Already at final status",
+                "current_status": item['status_name']}
 
         # Check for blocking constraints
-        if blocking_error := self._check_blocking_constraint(item_id, next_status["status_name"]):
+        if blocking_error := self._check_blocking_constraint(
+                item_id, next_status["status_name"]):
             return blocking_error
 
         # Perform the update
@@ -535,7 +591,11 @@ class KanbanDB:
             )
 
         # Record status change in history
-        self._record_status_change(item_id, item['status_id'], next_status['status_id'], 'advance')
+        self._record_status_change(
+            item_id,
+            item['status_id'],
+            next_status['status_id'],
+            'advance')
 
         # Auto-advance parent epics if this item is now complete
         if next_status['status_name'] in ('done', 'closed'):
@@ -548,7 +608,10 @@ class KanbanDB:
         }
 
     def revert_status(self, item_id: int) -> Dict:
-        """Move item to previous status in workflow. Returns new status info."""
+        """Move item to previous status in workflow.
+
+        Returns new status info.
+        """
         item = self.get_item(item_id)
         if not item:
             raise ValueError(f"Item not found: {item_id}")
@@ -575,7 +638,10 @@ class KanbanDB:
             prev_status = cursor.fetchone()
 
         if not prev_status:
-            return {"success": False, "message": "Already at first status", "current_status": item['status_name']}
+            return {
+                "success": False,
+                "message": "Already at first status",
+                "current_status": item['status_name']}
 
         # Perform the update
         with self._db_cursor(commit=True) as cursor:
@@ -585,7 +651,11 @@ class KanbanDB:
             )
 
         # Record status change in history
-        self._record_status_change(item_id, item['status_id'], prev_status['status_id'], 'revert')
+        self._record_status_change(
+            item_id,
+            item['status_id'],
+            prev_status['status_id'],
+            'revert')
 
         return {
             "success": True,
@@ -608,27 +678,35 @@ class KanbanDB:
                 WHERE type_id = %s AND status_id = %s
             """, (item['type_id'], status_id))
             if not cursor.fetchone():
-                raise ValueError(f"Status '{status_name}' not valid for type '{item['type_name']}'")
+                raise ValueError(
+                    f"Status '{status_name}' not valid"
+                    f" for type '{item['type_name']}'")
 
         # Check for blocking constraints
-        if blocking_error := self._check_blocking_constraint(item_id, status_name):
+        if blocking_error := self._check_blocking_constraint(
+                item_id, status_name):
             return blocking_error
 
         # Perform the update
         with self._db_cursor(commit=True) as cursor:
             if status_name in ('done', 'closed'):
                 cursor.execute(
-                    "UPDATE items SET status_id = %s, closed_at = NOW() WHERE id = %s",
-                    (status_id, item_id)
-                )
+                    "UPDATE items"
+                    " SET status_id = %s,"
+                    " closed_at = NOW()"
+                    " WHERE id = %s",
+                    (status_id, item_id))
             else:
                 cursor.execute(
-                    "UPDATE items SET status_id = %s, closed_at = NULL WHERE id = %s",
-                    (status_id, item_id)
-                )
+                    "UPDATE items"
+                    " SET status_id = %s,"
+                    " closed_at = NULL"
+                    " WHERE id = %s",
+                    (status_id, item_id))
 
         # Record status change in history
-        self._record_status_change(item_id, item['status_id'], status_id, 'set')
+        self._record_status_change(
+            item_id, item['status_id'], status_id, 'set')
 
         # Auto-advance parent epics if this item is now complete
         if status_name in ('done', 'closed'):
@@ -647,7 +725,8 @@ class KanbanDB:
             raise ValueError(f"Item not found: {item_id}")
 
         # Check for blocking constraints (close always targets final status)
-        if blocking_error := self._check_blocking_constraint(item_id, "closed"):
+        if blocking_error := self._check_blocking_constraint(
+                item_id, "closed"):
             return blocking_error
 
         # Get final status and perform update
@@ -663,12 +742,19 @@ class KanbanDB:
 
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "UPDATE items SET status_id = %s, closed_at = NOW() WHERE id = %s",
+                "UPDATE items"
+                " SET status_id = %s,"
+                " closed_at = NOW()"
+                " WHERE id = %s",
                 (final_status['id'], item_id)
             )
 
         # Record status change in history
-        self._record_status_change(item_id, item['status_id'], final_status['id'], 'close')
+        self._record_status_change(
+            item_id,
+            item['status_id'],
+            final_status['id'],
+            'close')
 
         # Auto-advance parent epics if this item is now complete
         self._auto_advance_ancestors(item_id)
@@ -686,14 +772,26 @@ class KanbanDB:
 
         with self._db_cursor(commit=True) as cursor:
             cursor.execute("DELETE FROM items WHERE id = %s", (item_id,))
-            return {"success": True, "deleted_id": item_id, "rows_affected": cursor.rowcount}
+            return {
+                "success": True,
+                "deleted_id": item_id,
+                "rows_affected": cursor.rowcount}
 
-    def update_item(self, item_id: int, title: str = None, description: str = None,
-                    priority: int = None, complexity: int = None) -> Dict:
-        """Update an existing item's title, description, priority, and/or complexity."""
+    def update_item(
+            self,
+            item_id: int,
+            title: str = None,
+            description: str = None,
+            priority: int = None,
+            complexity: int = None) -> Dict:
+        """Update an existing item's title, description,
+        priority, and/or complexity.
+        """
         # Validate complexity if provided
         if complexity is not None and (complexity < 1 or complexity > 5):
-            return {"success": False, "error": f"Complexity must be 1-5, got {complexity}"}
+            return {
+                "success": False,
+                "error": f"Complexity must be 1-5, got {complexity}"}
 
         # Check if item exists
         item = self.get_item(item_id)
@@ -721,7 +819,10 @@ class KanbanDB:
             return {"success": False, "error": "No fields to update"}
 
         with self._db_cursor(commit=True) as cursor:
-            query = f"UPDATE items SET {', '.join(updates)} WHERE id = %s"
+            query = (
+                f"UPDATE items SET "  # nosec B608
+                f"{', '.join(updates)} WHERE id = %s"
+            )
             params.append(item_id)
             cursor.execute(query, params)
 
@@ -732,7 +833,8 @@ class KanbanDB:
         updated_item = self.get_item(item_id)
         return {"success": True, "item": updated_item}
 
-    def add_update(self, project_id: str, content: str, item_ids: List[int] = None) -> int:
+    def add_update(self, project_id: str, content: str,
+                   item_ids: List[int] = None) -> int:
         """Add an update, optionally linked to items. Returns update id."""
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
@@ -744,9 +846,10 @@ class KanbanDB:
             if item_ids:
                 for item_id in item_ids:
                     cursor.execute(
-                        "INSERT INTO update_items (update_id, item_id) VALUES (%s, %s)",
-                        (update_id, item_id)
-                    )
+                        "INSERT INTO update_items"
+                        " (update_id, item_id)"
+                        " VALUES (%s, %s)",
+                        (update_id, item_id))
 
         # Auto-generate embedding
         self._safe_embedding_op('upsert_embedding', 'update', update_id)
@@ -767,9 +870,10 @@ class KanbanDB:
             """, (project_id,))
             result = cursor.fetchone()
             if result and result['item_ids']:
-                result['item_ids'] = [int(x) for x in result['item_ids'].split(',')]
+                result['item_ids'] = [
+                    int(x) for x in result['item_ids'].split(',')]
             return result
-    
+
     def get_updates(self, project_id: str, limit: int = 20) -> List[Dict]:
         """Get recent updates for a project."""
         with self._db_cursor(dictionary=True) as cursor:
@@ -792,7 +896,9 @@ class KanbanDB:
         """Get summary counts by type and status for a project."""
         with self._db_cursor(dictionary=True) as cursor:
             cursor.execute("""
-                SELECT it.name as type_name, s.name as status_name, COUNT(*) as count
+                SELECT it.name as type_name,
+                    s.name as status_name,
+                    COUNT(*) as count
                 FROM items i
                 JOIN item_types it ON i.type_id = it.id
                 JOIN statuses s ON i.status_id = s.id
@@ -811,17 +917,27 @@ class KanbanDB:
 
             return summary
     # --- Relationship Methods ---
-    
+
     RELATIONSHIP_TYPES = ('blocks', 'depends_on', 'relates_to', 'duplicates')
-    BLOCKING_STATUSES = ('done', 'closed')  # Items in these statuses don't block
-    
-    def add_relationship(self, source_id: int, target_id: int, relationship_type: str) -> Dict:
+    # Items in these statuses don't block
+    BLOCKING_STATUSES = ('done', 'closed')
+
+    def add_relationship(
+            self,
+            source_id: int,
+            target_id: int,
+            relationship_type: str) -> Dict:
         """Add a relationship between two items."""
         if relationship_type not in self.RELATIONSHIP_TYPES:
-            raise ValueError(f"Invalid relationship type: {relationship_type}. Must be one of {self.RELATIONSHIP_TYPES}")
+            raise ValueError(
+                f"Invalid relationship type: "
+                f"{relationship_type}. "
+                f"Must be one of "
+                f"{self.RELATIONSHIP_TYPES}")
 
         if source_id == target_id:
-            raise ValueError("Cannot create relationship between an item and itself")
+            raise ValueError(
+                "Cannot create relationship between an item and itself")
 
         # Verify both items exist and are in the same project
         source = self.get_item(source_id)
@@ -831,12 +947,17 @@ class KanbanDB:
         if not target:
             raise ValueError(f"Target item not found: {target_id}")
         if source['project_id'] != target['project_id']:
-            raise ValueError("Cannot create relationship between items in different projects")
+            raise ValueError(
+                "Cannot create relationship between"
+                " items in different projects")
 
         try:
             with self._db_cursor(commit=True) as cursor:
                 cursor.execute("""
-                    INSERT INTO item_relationships (source_item_id, target_item_id, relationship_type)
+                    INSERT INTO item_relationships
+                    (source_item_id,
+                     target_item_id,
+                     relationship_type)
                     VALUES (%s, %s, %s)
                 """, (source_id, target_id, relationship_type))
                 return {
@@ -848,29 +969,43 @@ class KanbanDB:
                 }
         except Exception as e:
             if "Duplicate entry" in str(e):
-                return {"success": False, "error": "Relationship already exists"}
+                return {
+                    "success": False,
+                    "error": "Relationship already exists"}
             raise
 
-    def remove_relationship(self, source_id: int, target_id: int, relationship_type: str) -> Dict:
+    def remove_relationship(
+            self,
+            source_id: int,
+            target_id: int,
+            relationship_type: str) -> Dict:
         """Remove a relationship between two items."""
         with self._db_cursor(commit=True) as cursor:
             cursor.execute("""
                 DELETE FROM item_relationships
-                WHERE source_item_id = %s AND target_item_id = %s AND relationship_type = %s
+                WHERE source_item_id = %s
+                  AND target_item_id = %s
+                  AND relationship_type = %s
             """, (source_id, target_id, relationship_type))
             return {
                 "success": cursor.rowcount > 0,
                 "rows_affected": cursor.rowcount
             }
-    
+
     def get_item_relationships(self, item_id: int) -> Dict:
         """Get all relationships for an item (both directions)."""
         with self._db_cursor(dictionary=True) as cursor:
             # Relationships where this item is the source
             cursor.execute("""
-                SELECT r.id, r.relationship_type, r.target_item_id as related_item_id,
-                       i.title as related_item_title, s.name as related_item_status,
-                       'outgoing' as direction
+                SELECT r.id,
+                    r.relationship_type,
+                    r.target_item_id
+                        as related_item_id,
+                    i.title
+                        as related_item_title,
+                    s.name
+                        as related_item_status,
+                    'outgoing' as direction
                 FROM item_relationships r
                 JOIN items i ON r.target_item_id = i.id
                 JOIN statuses s ON i.status_id = s.id
@@ -880,9 +1015,15 @@ class KanbanDB:
 
             # Relationships where this item is the target
             cursor.execute("""
-                SELECT r.id, r.relationship_type, r.source_item_id as related_item_id,
-                       i.title as related_item_title, s.name as related_item_status,
-                       'incoming' as direction
+                SELECT r.id,
+                    r.relationship_type,
+                    r.source_item_id
+                        as related_item_id,
+                    i.title
+                        as related_item_title,
+                    s.name
+                        as related_item_status,
+                    'incoming' as direction
                 FROM item_relationships r
                 JOIN items i ON r.source_item_id = i.id
                 JOIN statuses s ON i.status_id = s.id
@@ -892,20 +1033,30 @@ class KanbanDB:
 
             return {
                 "item_id": item_id,
-                "outgoing": outgoing,  # This item blocks/depends_on/relates_to others
-                "incoming": incoming   # Others block/depend_on/relate_to this item
+                # blocks/depends_on/relates_to others
+                "outgoing": outgoing,
+                # Others block/depend_on/relate_to
+                "incoming": incoming
             }
 
     def get_blocking_items(self, item_id: int) -> List[Dict]:
         """Get items that prevent this item from advancing to done/closed.
 
         Returns items that:
-        - Block this item (relationship_type='blocks', target=this_item) AND are not done/closed
-        - This item depends on (relationship_type='depends_on', source=this_item) AND are not done/closed
+        - Block this item
+          (relationship_type='blocks',
+          target=this_item)
+          AND are not done/closed
+        - This item depends on
+          (relationship_type='depends_on',
+          source=this_item)
+          AND are not done/closed
         """
         with self._db_cursor(dictionary=True) as cursor:
             cursor.execute("""
-                SELECT DISTINCT i.id, i.title, s.name as status, 'blocks' as reason
+                SELECT DISTINCT i.id, i.title,
+                    s.name as status,
+                    'blocks' as reason
                 FROM item_relationships r
                 JOIN items i ON r.source_item_id = i.id
                 JOIN statuses s ON i.status_id = s.id
@@ -915,7 +1066,9 @@ class KanbanDB:
 
                 UNION
 
-                SELECT DISTINCT i.id, i.title, s.name as status, 'dependency' as reason
+                SELECT DISTINCT i.id, i.title,
+                    s.name as status,
+                    'dependency' as reason
                 FROM item_relationships r
                 JOIN items i ON r.target_item_id = i.id
                 JOIN statuses s ON i.status_id = s.id
@@ -941,7 +1094,8 @@ class KanbanDB:
                     JOIN statuses s ON i.status_id = s.id
                     WHERE i.parent_id = %s
                     UNION ALL
-                    SELECT i.id, i.parent_id, s.name as status_name, d.depth + 1
+                    SELECT i.id, i.parent_id,
+                        s.name as status_name, d.depth + 1
                     FROM items i
                     JOIN statuses s ON i.status_id = s.id
                     JOIN descendants d ON i.parent_id = d.id
@@ -1017,15 +1171,22 @@ class KanbanDB:
             # Validate parent exists, is in same project, and is an epic
             parent = self.get_item(parent_id)
             if not parent:
-                return {"success": False, "error": f"Parent item not found: {parent_id}"}
+                return {
+                    "success": False,
+                    "error": f"Parent item not found: {parent_id}"}
             if parent['project_id'] != item['project_id']:
-                return {"success": False, "error": "Parent must be in the same project"}
+                return {
+                    "success": False,
+                    "error": "Parent must be in the same project"}
             if parent['type_name'] != 'epic':
                 return {"success": False, "error": "Parent must be an epic"}
 
             # Check for circular reference
             if self._would_create_cycle(item_id, parent_id):
-                return {"success": False, "error": "Cannot set parent: would create circular reference"}
+                return {
+                    "success": False,
+                    "error": "Cannot set parent: "
+                    "would create circular reference"}
 
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
@@ -1035,8 +1196,12 @@ class KanbanDB:
 
         return {"success": True, "item_id": item_id, "parent_id": parent_id}
 
-    def _would_create_cycle(self, item_id: int, proposed_parent_id: int) -> bool:
-        """Check if setting proposed_parent_id as parent of item_id would create a cycle."""
+    def _would_create_cycle(
+            self,
+            item_id: int,
+            proposed_parent_id: int) -> bool:
+        """Check if setting proposed_parent_id as parent
+        of item_id would create a cycle."""
         # If proposed parent is the item itself
         if item_id == proposed_parent_id:
             return True
@@ -1066,14 +1231,16 @@ class KanbanDB:
             incomplete_count = len(progress['incomplete_items'])
             return {
                 "success": False,
-                "message": f"Cannot close epic: {incomplete_count} incomplete child items",
-                "incomplete_items": progress['incomplete_items']
-            }
+                "message": (
+                    f"Cannot close epic: {incomplete_count}"
+                    " incomplete child items"),
+                "incomplete_items": progress['incomplete_items']}
 
         return None
 
     def _auto_advance_ancestors(self, item_id: int) -> None:
-        """Check parent epics and auto-advance to 'review' if all descendants complete.
+        """Check parent epics and auto-advance to 'review'
+        if all descendants complete.
 
         Called after status changes to propagate completion up the hierarchy.
         """
@@ -1087,7 +1254,8 @@ class KanbanDB:
 
         # Check if all descendants are complete
         progress = self.get_epic_progress(parent['id'])
-        if progress['total'] > 0 and progress['completed'] == progress['total']:
+        if (progress['total'] > 0
+                and progress['completed'] == progress['total']):
             # Only auto-advance if not already in review or beyond
             if parent['status_name'] not in ('review', 'done', 'closed'):
                 # Use internal method to avoid recursion through set_status
@@ -1098,7 +1266,8 @@ class KanbanDB:
                         "UPDATE items SET status_id = %s WHERE id = %s",
                         (new_status_id, parent['id'])
                     )
-                self._record_status_change(parent['id'], old_status_id, new_status_id, 'auto_advance')
+                self._record_status_change(
+                    parent['id'], old_status_id, new_status_id, 'auto_advance')
 
                 # Recurse to check grandparent
                 self._auto_advance_ancestors(parent['id'])
@@ -1123,7 +1292,9 @@ class KanbanDB:
             raise ValueError("Tag name cannot be empty")
 
         if len(normalized) > 50:
-            raise ValueError(f"Tag name too long (max 50 chars, got {len(normalized)})")
+            raise ValueError(
+                "Tag name too long"
+                f" (max 50 chars, got {len(normalized)})")
 
         return normalized
 
@@ -1136,10 +1307,12 @@ class KanbanDB:
             )
             result = cursor.fetchone()
             tag_count = result[0] if result else 0
-            return self.TAG_COLOR_PALETTE[tag_count % len(self.TAG_COLOR_PALETTE)]
+            return self.TAG_COLOR_PALETTE[tag_count %
+                                          len(self.TAG_COLOR_PALETTE)]
 
     def ensure_tag(self, project_id: str, name: str, color: str = None) -> int:
-        """Get or create tag. Returns tag_id. Auto-assigns color if not provided."""
+        """Get or create tag. Returns tag_id.
+        Auto-assigns color if not provided."""
         name = self._normalize_tag_name(name)
 
         # Check if tag exists
@@ -1159,18 +1332,18 @@ class KanbanDB:
         try:
             with self._db_cursor(commit=True) as cursor:
                 cursor.execute(
-                    "INSERT INTO tags (project_id, name, color) VALUES (%s, %s, %s)",
-                    (project_id, name, color)
-                )
+                    "INSERT INTO tags (project_id, name, color)"
+                    " VALUES (%s, %s, %s)",
+                    (project_id, name, color))
                 return cursor.lastrowid
         except Exception as e:
             if "Duplicate entry" in str(e):
                 # Race condition: tag created by concurrent request
                 with self._db_cursor(dictionary=True) as cursor:
                     cursor.execute(
-                        "SELECT id FROM tags WHERE project_id = %s AND name = %s",
-                        (project_id, name)
-                    )
+                        "SELECT id FROM tags"
+                        " WHERE project_id = %s AND name = %s",
+                        (project_id, name))
                     result = cursor.fetchone()
                     if result:
                         return result['id']
@@ -1195,7 +1368,11 @@ class KanbanDB:
             """, (project_id,))
             return cursor.fetchall()
 
-    def update_tag(self, tag_id: int, name: str = None, color: str = None) -> Dict:
+    def update_tag(
+            self,
+            tag_id: int,
+            name: str = None,
+            color: str = None) -> Dict:
         """Update tag name and/or color."""
         tag = self.get_tag(tag_id)
         if not tag:
@@ -1216,7 +1393,9 @@ class KanbanDB:
             # Strict hex color validation to prevent CSS injection
             import re
             if not re.match(r'^#[0-9a-fA-F]{6}$', color):
-                return {"success": False, "error": "Invalid color format (use #RRGGBB hex)"}
+                return {
+                    "success": False,
+                    "error": "Invalid color format (use #RRGGBB hex)"}
             updates.append("color = %s")
             params.append(color)
 
@@ -1225,13 +1404,18 @@ class KanbanDB:
 
         try:
             with self._db_cursor(commit=True) as cursor:
-                query = f"UPDATE tags SET {', '.join(updates)} WHERE id = %s"
+                query = (
+                    f"UPDATE tags SET "  # nosec B608
+                    f"{', '.join(updates)} WHERE id = %s"
+                )
                 params.append(tag_id)
                 cursor.execute(query, params)
             return {"success": True, "tag": self.get_tag(tag_id)}
         except Exception as e:
             if "Duplicate entry" in str(e):
-                return {"success": False, "error": "Tag name already exists in this project"}
+                return {
+                    "success": False,
+                    "error": "Tag name already exists in this project"}
             raise
 
     def delete_tag(self, tag_id: int) -> Dict:
@@ -1268,7 +1452,9 @@ class KanbanDB:
             }
         except Exception as e:
             if "Duplicate entry" in str(e):
-                return {"success": False, "error": "Tag already assigned to item"}
+                return {
+                    "success": False,
+                    "error": "Tag already assigned to item"}
             raise
 
     def remove_tag_from_item(self, item_id: int, tag_id: int) -> Dict:
@@ -1297,7 +1483,8 @@ class KanbanDB:
 
     # --- Search Methods ---
 
-    def search(self, project_id: str, query: str, limit: int = 20) -> Dict[str, Any]:
+    def search(self, project_id: str, query: str,
+               limit: int = 20) -> Dict[str, Any]:
         """Full-text search across items and updates.
 
         Args:
@@ -1313,7 +1500,8 @@ class KanbanDB:
         items = []
         updates = []
 
-        # Use BOOLEAN MODE if query contains wildcard, otherwise NATURAL LANGUAGE
+        # Use BOOLEAN MODE if query contains wildcard, otherwise NATURAL
+        # LANGUAGE
         use_boolean = '*' in query
         mode = 'IN BOOLEAN MODE' if use_boolean else 'IN NATURAL LANGUAGE MODE'
 
@@ -1322,7 +1510,8 @@ class KanbanDB:
             cursor.execute(f"""
                 SELECT i.id, i.title, i.description,
                        it.name as type_name, s.name as status_name,
-                       MATCH(i.title, i.description) AGAINST(%s {mode}) as score
+                       MATCH(i.title, i.description)
+                       AGAINST(%s {mode}) as score
                 FROM items i
                 JOIN item_types it ON i.type_id = it.id
                 JOIN statuses s ON i.status_id = s.id
@@ -1330,13 +1519,14 @@ class KanbanDB:
                   AND MATCH(i.title, i.description) AGAINST(%s {mode})
                 ORDER BY score DESC
                 LIMIT %s
-            """, (query, project_id, query, limit))
+            """, (query, project_id, query, limit))  # nosec B608
 
             for row in cursor.fetchall():
                 # Create snippet from title or description
                 snippet = row['title']
                 if row['description']:
-                    snippet = row['description'][:100] + ('...' if len(row['description']) > 100 else '')
+                    snippet = row['description'][:100] + \
+                        ('...' if len(row['description']) > 100 else '')
 
                 items.append({
                     'id': row['id'],
@@ -1356,10 +1546,11 @@ class KanbanDB:
                   AND MATCH(u.content) AGAINST(%s {mode})
                 ORDER BY score DESC
                 LIMIT %s
-            """, (query, project_id, query, limit))
+            """, (query, project_id, query, limit))  # nosec B608
 
             for row in cursor.fetchall():
-                snippet = row['content'][:100] + ('...' if len(row['content']) > 100 else '')
+                snippet = row['content'][:100] + \
+                    ('...' if len(row['content']) > 100 else '')
                 updates.append({
                     'id': row['id'],
                     'snippet': snippet,
@@ -1375,7 +1566,12 @@ class KanbanDB:
 
     # --- File Linking Methods ---
 
-    def link_file(self, item_id: int, file_path: str, line_start: int = None, line_end: int = None) -> Dict[str, Any]:
+    def link_file(self,
+                  item_id: int,
+                  file_path: str,
+                  line_start: int = None,
+                  line_end: int = None) -> Dict[str,
+                                                Any]:
         """Link a file (or file region) to an item.
 
         Args:
@@ -1402,21 +1598,33 @@ class KanbanDB:
                 WHERE item_id = %s AND file_path = %s
                   AND (line_start IS NULL AND %s IS NULL OR line_start = %s)
                   AND (line_end IS NULL AND %s IS NULL OR line_end = %s)
-            """, (item_id, file_path, line_start, line_start, line_end, line_end))
+            """, (
+                item_id, file_path,
+                line_start, line_start,
+                line_end, line_end))
 
             if cursor.fetchone():
-                return {'success': False, 'error': 'Link already exists for this file and line range'}
+                return {
+                    'success': False,
+                    'error': 'Link already exists for '
+                    'this file and line range'}
 
             # Insert new link
             cursor.execute("""
-                INSERT INTO item_files (item_id, file_path, line_start, line_end)
+                INSERT INTO item_files
+                    (item_id, file_path, line_start, line_end)
                 VALUES (%s, %s, %s, %s)
             """, (item_id, file_path, line_start, line_end))
 
             link_id = cursor.lastrowid
             return {'success': True, 'link_id': link_id}
 
-    def unlink_file(self, item_id: int, file_path: str, line_start: int = None, line_end: int = None) -> Dict[str, Any]:
+    def unlink_file(self,
+                    item_id: int,
+                    file_path: str,
+                    line_start: int = None,
+                    line_end: int = None) -> Dict[str,
+                                                  Any]:
         """Remove a file link from an item.
 
         Args:
@@ -1434,7 +1642,10 @@ class KanbanDB:
                 WHERE item_id = %s AND file_path = %s
                   AND (line_start IS NULL AND %s IS NULL OR line_start = %s)
                   AND (line_end IS NULL AND %s IS NULL OR line_end = %s)
-            """, (item_id, file_path, line_start, line_start, line_end, line_end))
+            """, (
+                item_id, file_path,
+                line_start, line_start,
+                line_end, line_end))
 
             if cursor.rowcount > 0:
                 return {'success': True}
@@ -1460,8 +1671,12 @@ class KanbanDB:
 
     # --- Decision History Methods ---
 
-    def add_decision(self, item_id: int, choice: str, rejected_alternatives: str = None,
-                     rationale: str = None) -> Dict[str, Any]:
+    def add_decision(self,
+                     item_id: int,
+                     choice: str,
+                     rejected_alternatives: str = None,
+                     rationale: str = None) -> Dict[str,
+                                                    Any]:
         """Add a decision record to an item.
 
         Args:
@@ -1478,15 +1693,21 @@ class KanbanDB:
         """
         # Validate choice length
         if len(choice) > 200:
-            raise ValueError(f"Choice exceeds 200 char limit (got {len(choice)})")
+            raise ValueError(
+                "Choice exceeds 200 char limit"
+                f" (got {len(choice)})")
 
         # Validate rejected_alternatives length
         if rejected_alternatives and len(rejected_alternatives) > 500:
-            raise ValueError(f"Rejected alternatives exceeds 500 char limit (got {len(rejected_alternatives)})")
+            raise ValueError(
+                "Rejected alternatives exceeds 500 char"
+                f" limit (got {len(rejected_alternatives)})")
 
         # Validate rationale length
         if rationale and len(rationale) > 200:
-            raise ValueError(f"Rationale exceeds 200 char limit (got {len(rationale)})")
+            raise ValueError(
+                "Rationale exceeds 200 char limit"
+                f" (got {len(rationale)})")
 
         with self._db_cursor(dictionary=True, commit=True) as cursor:
             # Verify item exists
@@ -1496,7 +1717,9 @@ class KanbanDB:
 
             # Insert decision
             cursor.execute("""
-                INSERT INTO item_decisions (item_id, choice, rejected_alternatives, rationale)
+                INSERT INTO item_decisions
+                    (item_id, choice,
+                     rejected_alternatives, rationale)
                 VALUES (%s, %s, %s, %s)
             """, (item_id, choice, rejected_alternatives, rationale))
 
@@ -1514,11 +1737,14 @@ class KanbanDB:
             item_id: The item ID to get decisions for
 
         Returns:
-            List of dicts with id, choice, rejected_alternatives, rationale, created_at
+            List of dicts with id, choice,
+            rejected_alternatives, rationale, created_at
         """
         with self._db_cursor(dictionary=True) as cursor:
             cursor.execute("""
-                SELECT id, item_id, choice, rejected_alternatives, rationale, created_at
+                SELECT id, item_id, choice,
+                    rejected_alternatives,
+                    rationale, created_at
                 FROM item_decisions
                 WHERE item_id = %s
                 ORDER BY created_at DESC, id DESC
@@ -1538,7 +1764,8 @@ class KanbanDB:
         self._safe_embedding_op('delete_embedding', 'decision', decision_id)
 
         with self._db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM item_decisions WHERE id = %s", (decision_id,))
+            cursor.execute(
+                "DELETE FROM item_decisions WHERE id = %s", (decision_id,))
             if cursor.rowcount > 0:
                 return {'success': True, 'deleted_id': decision_id}
             return {'success': False, 'error': 'Decision not found'}
@@ -1562,17 +1789,20 @@ class KanbanDB:
             from huggingface_hub import hf_hub_download
 
             # Try to find model in models/ directory
-            model_dir = Path(__file__).parent / 'models' / 'nomic-embed-text-v1.5'
+            model_dir = Path(__file__).parent / 'models' / \
+                'nomic-embed-text-v1.5'
 
             if not model_dir.exists():
                 # Download from HuggingFace
                 model_path = hf_hub_download(
                     repo_id="nomic-ai/nomic-embed-text-v1.5",
-                    filename="onnx/model.onnx"
+                    filename="onnx/model.onnx",
+                    revision="e5cf08aadaa33385f5990def41f7a23405aec398",
                 )
                 tokenizer_path = hf_hub_download(
                     repo_id="nomic-ai/nomic-embed-text-v1.5",
-                    filename="tokenizer.json"
+                    filename="tokenizer.json",
+                    revision="e5cf08aadaa33385f5990def41f7a23405aec398",
                 )
             else:
                 model_path = model_dir / 'onnx' / 'model.onnx'
@@ -1619,28 +1849,39 @@ class KanbanDB:
         # Add token_type_ids if model requires it
         input_names = [inp.name for inp in _onnx_session.get_inputs()]
         if "token_type_ids" in input_names:
-            input_dict["token_type_ids"] = np.zeros_like(input_ids, dtype=np.int64)
+            input_dict["token_type_ids"] = np.zeros_like(
+                input_ids, dtype=np.int64)
 
         # Run inference
         outputs = _onnx_session.run(None, input_dict)
 
-        # Get embeddings - model outputs [batch, seq_len, hidden] or [batch, hidden]
+        # Get embeddings - model outputs [batch, seq_len, hidden] or [batch,
+        # hidden]
         embeddings = outputs[0]
 
         # Mean pooling over sequence dimension if needed
         if len(embeddings.shape) == 3:
             mask_expanded = np.expand_dims(attention_mask, -1)
             sum_embeddings = np.sum(embeddings * mask_expanded, axis=1)
-            sum_mask = np.clip(np.sum(mask_expanded, axis=1), a_min=1e-9, a_max=None)
+            sum_mask = np.clip(
+                np.sum(
+                    mask_expanded,
+                    axis=1),
+                a_min=1e-9,
+                a_max=None)
             embeddings = sum_embeddings / sum_mask
 
         # Normalize to unit vector
-        embeddings = embeddings / np.linalg.norm(embeddings, axis=-1, keepdims=True)
+        embeddings = embeddings / \
+            np.linalg.norm(embeddings, axis=-1, keepdims=True)
 
         # Pack as bytes
         return embeddings[0].astype(np.float32).tobytes()
 
-    def _get_content_for_embedding(self, source_type: str, source_id: int) -> Optional[str]:
+    def _get_content_for_embedding(
+            self,
+            source_type: str,
+            source_id: int) -> Optional[str]:
         """Build text to embed based on source type.
 
         Args:
@@ -1662,22 +1903,25 @@ class KanbanDB:
         elif source_type == 'decision':
             with self._db_cursor(dictionary=True) as cursor:
                 cursor.execute(
-                    "SELECT choice, rejected_alternatives, rationale FROM item_decisions WHERE id = %s",
-                    (source_id,)
-                )
+                    "SELECT choice, rejected_alternatives,"
+                    " rationale FROM item_decisions"
+                    " WHERE id = %s",
+                    (source_id,))
                 decision = cursor.fetchone()
                 if not decision:
                     return None
                 parts = [decision['choice']]
                 if decision.get('rejected_alternatives'):
-                    parts.append(f"Rejected: {decision['rejected_alternatives']}")
+                    rej = decision['rejected_alternatives']
+                    parts.append(f"Rejected: {rej}")
                 if decision.get('rationale'):
                     parts.append(f"Rationale: {decision['rationale']}")
                 return ' '.join(parts)
 
         elif source_type == 'update':
             with self._db_cursor(dictionary=True) as cursor:
-                cursor.execute("SELECT content FROM updates WHERE id = %s", (source_id,))
+                cursor.execute(
+                    "SELECT content FROM updates WHERE id = %s", (source_id,))
                 update = cursor.fetchone()
                 if not update:
                     return None
@@ -1687,9 +1931,12 @@ class KanbanDB:
 
     def _compute_content_hash(self, content: str) -> str:
         """Compute MD5 hash of content for change detection."""
-        return hashlib.md5(content.encode()).hexdigest()
+        return hashlib.md5(
+            content.encode(), usedforsecurity=False
+        ).hexdigest()
 
-    def upsert_embedding(self, source_type: str, source_id: int) -> Dict[str, Any]:
+    def upsert_embedding(self, source_type: str,
+                         source_id: int) -> Dict[str, Any]:
         """Generate and store embedding for a source.
 
         Args:
@@ -1697,15 +1944,20 @@ class KanbanDB:
             source_id: ID of the source record
 
         Returns:
-            Dict with success, status ('created', 'updated', 'unchanged'), embedding_id
+            Dict with success, status
+            ('created'/'updated'/'unchanged'), embedding_id
         """
         if source_type not in self.VALID_SOURCE_TYPES:
-            return {'success': False, 'error': f'Invalid source type: {source_type}'}
+            return {
+                'success': False,
+                'error': f'Invalid source type: {source_type}'}
 
         # Get content to embed
         content = self._get_content_for_embedding(source_type, source_id)
         if content is None:
-            return {'success': False, 'error': f'{source_type} not found: {source_id}'}
+            return {
+                'success': False,
+                'error': f'{source_type} not found: {source_id}'}
 
         content_hash = self._compute_content_hash(content)
 
@@ -1718,30 +1970,51 @@ class KanbanDB:
             existing = cursor.fetchone()
 
         if existing and existing['content_hash'] == content_hash:
-            return {'success': True, 'status': 'unchanged', 'embedding_id': existing['id']}
+            return {
+                'success': True,
+                'status': 'unchanged',
+                'embedding_id': existing['id']}
 
         # Generate new embedding
         try:
             vector = self.generate_embedding(content)
         except Exception as e:
-            return {'success': False, 'error': f'Embedding generation failed: {e}'}
+            return {
+                'success': False,
+                'error': f'Embedding generation failed: {e}'}
 
         # Upsert into database
         with self._db_cursor(commit=True) as cursor:
             if existing:
                 cursor.execute("""
-                    UPDATE embeddings SET vector = %s, content_hash = %s, created_at = NOW()
+                    UPDATE embeddings
+                    SET vector = %s,
+                        content_hash = %s,
+                        created_at = NOW()
                     WHERE id = %s
                 """, (vector, content_hash, existing['id']))
-                return {'success': True, 'status': 'updated', 'embedding_id': existing['id']}
+                return {
+                    'success': True,
+                    'status': 'updated',
+                    'embedding_id': existing['id']}
             else:
                 cursor.execute("""
-                    INSERT INTO embeddings (source_type, source_id, content_hash, model, vector)
+                    INSERT INTO embeddings
+                        (source_type, source_id,
+                         content_hash, model, vector)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (source_type, source_id, content_hash, self.EMBEDDING_MODEL, vector))
-                return {'success': True, 'status': 'created', 'embedding_id': cursor.lastrowid}
+                """, (
+                    source_type, source_id, content_hash,
+                    self.EMBEDDING_MODEL, vector))
+                return {
+                    'success': True,
+                    'status': 'created',
+                    'embedding_id': cursor.lastrowid}
 
-    def get_embedding(self, source_type: str, source_id: int) -> Optional[Dict]:
+    def get_embedding(
+            self,
+            source_type: str,
+            source_id: int) -> Optional[Dict]:
         """Retrieve embedding for a source.
 
         Args:
@@ -1749,18 +2022,22 @@ class KanbanDB:
             source_id: ID of the source record
 
         Returns:
-            Dict with id, source_type, source_id, content_hash, model, vector, created_at
+            Dict with id, source_type, source_id,
+            content_hash, model, vector, created_at
             or None if not found
         """
         with self._db_cursor(dictionary=True) as cursor:
             cursor.execute("""
-                SELECT id, source_type, source_id, content_hash, model, vector, created_at
+                SELECT id, source_type, source_id,
+                    content_hash, model, vector,
+                    created_at
                 FROM embeddings
                 WHERE source_type = %s AND source_id = %s AND model = %s
             """, (source_type, source_id, self.EMBEDDING_MODEL))
             return cursor.fetchone()
 
-    def delete_embedding(self, source_type: str, source_id: int) -> Dict[str, Any]:
+    def delete_embedding(self, source_type: str,
+                         source_id: int) -> Dict[str, Any]:
         """Remove embedding when source is deleted.
 
         Args:
@@ -1779,8 +2056,13 @@ class KanbanDB:
                 return {'success': True}
             return {'success': False, 'error': 'Embedding not found'}
 
-    def semantic_search(self, project_id: str, query: str, limit: int = 10,
-                        source_types: List[str] = None, threshold: float = 0.0) -> List[Dict]:
+    def semantic_search(
+            self,
+            project_id: str,
+            query: str,
+            limit: int = 10,
+            source_types: List[str] = None,
+            threshold: float = 0.0) -> List[Dict]:
         """Search by semantic similarity.
 
         Args:
@@ -1791,7 +2073,8 @@ class KanbanDB:
             threshold: Minimum similarity score (0.0 to 1.0)
 
         Returns:
-            List of dicts with source_type, source_id, similarity, title/content
+            List of dicts with source_type, source_id,
+            similarity, title/content
         """
         # Generate query embedding with search prefix
         self._init_embedding_model()
@@ -1810,7 +2093,8 @@ class KanbanDB:
         }
         input_names = [inp.name for inp in _onnx_session.get_inputs()]
         if "token_type_ids" in input_names:
-            input_dict["token_type_ids"] = np.zeros_like(input_ids, dtype=np.int64)
+            input_dict["token_type_ids"] = np.zeros_like(
+                input_ids, dtype=np.int64)
 
         outputs = _onnx_session.run(None, input_dict)
 
@@ -1818,10 +2102,16 @@ class KanbanDB:
         if len(embeddings.shape) == 3:
             mask_expanded = np.expand_dims(attention_mask, -1)
             sum_embeddings = np.sum(embeddings * mask_expanded, axis=1)
-            sum_mask = np.clip(np.sum(mask_expanded, axis=1), a_min=1e-9, a_max=None)
+            sum_mask = np.clip(
+                np.sum(
+                    mask_expanded,
+                    axis=1),
+                a_min=1e-9,
+                a_max=None)
             embeddings = sum_embeddings / sum_mask
 
-        embeddings = embeddings / np.linalg.norm(embeddings, axis=-1, keepdims=True)
+        embeddings = embeddings / \
+            np.linalg.norm(embeddings, axis=-1, keepdims=True)
         query_vector = embeddings[0].astype(np.float32)
 
         # Build source type filter
@@ -1839,27 +2129,32 @@ class KanbanDB:
                 if source_type == 'item':
                     cursor.execute("""
                         SELECT e.id, e.source_type, e.source_id, e.vector,
-                               i.title, i.description, it.name as type_name, s.name as status_name
+                               i.title, i.description,
+                               it.name as type_name,
+                               s.name as status_name
                         FROM embeddings e
                         JOIN items i ON e.source_id = i.id
                         JOIN item_types it ON i.type_id = it.id
                         JOIN statuses s ON i.status_id = s.id
-                        WHERE e.source_type = 'item' AND e.model = %s AND i.project_id = %s
+                        WHERE e.source_type = 'item'
+                            AND e.model = %s
+                            AND i.project_id = %s
                     """, (self.EMBEDDING_MODEL, project_id))
 
                     for row in cursor.fetchall():
-                        stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
+                        stored_vector = np.frombuffer(
+                            row['vector'], dtype=np.float32)
                         similarity = float(np.dot(query_vector, stored_vector))
                         if similarity >= threshold:
-                            results.append({
-                                'source_type': 'item',
-                                'source_id': row['source_id'],
-                                'similarity': round(similarity, 4),
-                                'title': row['title'],
-                                'snippet': row['description'][:100] if row['description'] else None,
-                                'type_name': row['type_name'],
-                                'status_name': row['status_name']
-                            })
+                            results.append(
+                                {'source_type': 'item',
+                                 'source_id': row['source_id'],
+                                 'similarity': round(similarity, 4),
+                                 'title': row['title'],
+                                 'snippet': row['description'][: 100]
+                                 if row['description'] else None,
+                                 'type_name': row['type_name'],
+                                 'status_name': row['status_name']})
 
                 elif source_type == 'decision':
                     cursor.execute("""
@@ -1868,11 +2163,14 @@ class KanbanDB:
                         FROM embeddings e
                         JOIN item_decisions d ON e.source_id = d.id
                         JOIN items i ON d.item_id = i.id
-                        WHERE e.source_type = 'decision' AND e.model = %s AND i.project_id = %s
+                        WHERE e.source_type = 'decision'
+                            AND e.model = %s
+                            AND i.project_id = %s
                     """, (self.EMBEDDING_MODEL, project_id))
 
                     for row in cursor.fetchall():
-                        stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
+                        stored_vector = np.frombuffer(
+                            row['vector'], dtype=np.float32)
                         similarity = float(np.dot(query_vector, stored_vector))
                         if similarity >= threshold:
                             results.append({
@@ -1889,20 +2187,23 @@ class KanbanDB:
                                u.content, u.created_at
                         FROM embeddings e
                         JOIN updates u ON e.source_id = u.id
-                        WHERE e.source_type = 'update' AND e.model = %s AND u.project_id = %s
+                        WHERE e.source_type = 'update'
+                            AND e.model = %s
+                            AND u.project_id = %s
                     """, (self.EMBEDDING_MODEL, project_id))
 
                     for row in cursor.fetchall():
-                        stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
+                        stored_vector = np.frombuffer(
+                            row['vector'], dtype=np.float32)
                         similarity = float(np.dot(query_vector, stored_vector))
                         if similarity >= threshold:
-                            results.append({
-                                'source_type': 'update',
-                                'source_id': row['source_id'],
-                                'similarity': round(similarity, 4),
-                                'snippet': row['content'][:100] if row['content'] else None,
-                                'created_at': row['created_at']
-                            })
+                            results.append(
+                                {'source_type': 'update',
+                                 'source_id': row['source_id'],
+                                 'similarity': round(similarity, 4),
+                                 'snippet': row['content'][: 100]
+                                 if row['content'] else None,
+                                 'created_at': row['created_at']})
 
         # Sort by similarity descending and limit
         results.sort(key=lambda x: x['similarity'], reverse=True)
@@ -1946,7 +2247,9 @@ class KanbanDB:
                     project_id = row['project_id']
         elif source_type == 'update':
             with self._db_cursor(dictionary=True) as cursor:
-                cursor.execute("SELECT project_id FROM updates WHERE id = %s", (source_id,))
+                cursor.execute(
+                    "SELECT project_id FROM updates WHERE id = %s",
+                    (source_id,))
                 row = cursor.fetchone()
                 if row:
                     project_id = row['project_id']
@@ -1967,7 +2270,8 @@ class KanbanDB:
 
             for row in cursor.fetchall():
                 # Skip self
-                if row['source_type'] == source_type and row['source_id'] == source_id:
+                if (row['source_type'] == source_type
+                        and row['source_id'] == source_id):
                     continue
                 stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
                 similarity = float(np.dot(source_vector, stored_vector))
@@ -1981,15 +2285,20 @@ class KanbanDB:
 
             # Decisions
             cursor.execute("""
-                SELECT e.source_type, e.source_id, e.vector, d.choice
+                SELECT e.source_type, e.source_id,
+                    e.vector, d.choice
                 FROM embeddings e
-                JOIN item_decisions d ON e.source_id = d.id AND e.source_type = 'decision'
+                JOIN item_decisions d
+                    ON e.source_id = d.id
+                    AND e.source_type = 'decision'
                 JOIN items i ON d.item_id = i.id
-                WHERE e.model = %s AND i.project_id = %s
+                WHERE e.model = %s
+                    AND i.project_id = %s
             """, (self.EMBEDDING_MODEL, project_id))
 
             for row in cursor.fetchall():
-                if row['source_type'] == source_type and row['source_id'] == source_id:
+                if (row['source_type'] == source_type
+                        and row['source_id'] == source_id):
                     continue
                 stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
                 similarity = float(np.dot(source_vector, stored_vector))
@@ -2003,29 +2312,38 @@ class KanbanDB:
 
             # Updates
             cursor.execute("""
-                SELECT e.source_type, e.source_id, e.vector, u.content
+                SELECT e.source_type, e.source_id,
+                    e.vector, u.content
                 FROM embeddings e
-                JOIN updates u ON e.source_id = u.id AND e.source_type = 'update'
-                WHERE e.model = %s AND u.project_id = %s
+                JOIN updates u
+                    ON e.source_id = u.id
+                    AND e.source_type = 'update'
+                WHERE e.model = %s
+                    AND u.project_id = %s
             """, (self.EMBEDDING_MODEL, project_id))
 
             for row in cursor.fetchall():
-                if row['source_type'] == source_type and row['source_id'] == source_id:
+                if (row['source_type'] == source_type
+                        and row['source_id'] == source_id):
                     continue
                 stored_vector = np.frombuffer(row['vector'], dtype=np.float32)
                 similarity = float(np.dot(source_vector, stored_vector))
                 if similarity >= threshold:
-                    results.append({
-                        'source_type': row['source_type'],
-                        'source_id': row['source_id'],
-                        'similarity': round(similarity, 4),
-                        'snippet': row['content'][:100] if row['content'] else None
-                    })
+                    results.append(
+                        {'source_type': row['source_type'],
+                         'source_id': row['source_id'],
+                         'similarity': round(similarity, 4),
+                         'snippet': row['content'][: 100]
+                         if row['content'] else None})
 
         results.sort(key=lambda x: x['similarity'], reverse=True)
         return results[:limit]
 
-    def _rebuild_source_type(self, source_type: str, query: str, params: tuple = ()) -> tuple:
+    def _rebuild_source_type(
+            self,
+            source_type: str,
+            query: str,
+            params: tuple = ()) -> tuple:
         """Fetch IDs, close cursor, then rebuild embeddings for each.
 
         Returns:
@@ -2041,10 +2359,13 @@ class KanbanDB:
             if result['success']:
                 processed += 1
             else:
-                errors.append(f"{source_type}:{source_id}: {result.get('error')}")
+                err = result.get('error')
+                errors.append(
+                    f"{source_type}:{source_id}: {err}")
         return processed, errors
 
-    def rebuild_embeddings(self, project_id: str, source_types: List[str] = None) -> Dict[str, Any]:
+    def rebuild_embeddings(self, project_id: str,
+                           source_types: List[str] = None) -> Dict[str, Any]:
         """Rebuild all embeddings for a project.
 
         Args:
@@ -2062,21 +2383,29 @@ class KanbanDB:
 
         if 'item' in source_types:
             p, e = self._rebuild_source_type(
-                'item', "SELECT id FROM items WHERE project_id = %s", (project_id,))
+                'item',
+                "SELECT id FROM items"
+                " WHERE project_id = %s",
+                (project_id,))
             processed += p
             errors.extend(e)
 
         if 'decision' in source_types:
             p, e = self._rebuild_source_type(
                 'decision',
-                "SELECT d.id FROM item_decisions d JOIN items i ON d.item_id = i.id WHERE i.project_id = %s",
+                "SELECT d.id FROM item_decisions d"
+                " JOIN items i ON d.item_id = i.id"
+                " WHERE i.project_id = %s",
                 (project_id,))
             processed += p
             errors.extend(e)
 
         if 'update' in source_types:
             p, e = self._rebuild_source_type(
-                'update', "SELECT id FROM updates WHERE project_id = %s", (project_id,))
+                'update',
+                "SELECT id FROM updates"
+                " WHERE project_id = %s",
+                (project_id,))
             processed += p
             errors.extend(e)
 
@@ -2086,7 +2415,8 @@ class KanbanDB:
             'errors': errors if errors else None
         }
 
-    def rebuild_all_embeddings(self, source_types: List[str] = None) -> Dict[str, Any]:
+    def rebuild_all_embeddings(
+            self, source_types: List[str] = None) -> Dict[str, Any]:
         """Rebuild embeddings for ALL projects.
 
         Args:
@@ -2107,12 +2437,14 @@ class KanbanDB:
             errors.extend(e)
 
         if 'decision' in source_types:
-            p, e = self._rebuild_source_type('decision', "SELECT id FROM item_decisions")
+            p, e = self._rebuild_source_type(
+                'decision', "SELECT id FROM item_decisions")
             processed += p
             errors.extend(e)
 
         if 'update' in source_types:
-            p, e = self._rebuild_source_type('update', "SELECT id FROM updates")
+            p, e = self._rebuild_source_type(
+                'update', "SELECT id FROM updates")
             processed += p
             errors.extend(e)
 
@@ -2124,8 +2456,12 @@ class KanbanDB:
 
     # --- Timeline Methods ---
 
-    def get_timeline_data(self, item_id: int = None, project_id: str = None,
-                          limit: int = 100, repo_path: str = None) -> Dict[str, Any]:
+    def get_timeline_data(self,
+                          item_id: int = None,
+                          project_id: str = None,
+                          limit: int = 100,
+                          repo_path: str = None) -> Dict[str,
+                                                         Any]:
         """Get unified activity timeline for an item or project.
 
         Aggregates status changes, decisions, updates, and git commits.
@@ -2157,7 +2493,9 @@ class KanbanDB:
         elif project_id:
             entries = builder.build_project_timeline(project_id, limit=limit)
         else:
-            return {'success': False, 'error': 'Either item_id or project_id required'}
+            return {
+                'success': False,
+                'error': 'Either item_id or project_id required'}
 
         # Serialize for JSON output
         serialized = builder.serialize_timeline(entries)
@@ -2171,17 +2509,21 @@ class KanbanDB:
 
 class KanbanMCPServer:
     """MCP Server for Kanban system."""
-    
+
     def __init__(self, name: str = "kanban-mcp", version: str = "1.0.0"):
         self.name = name
         self.version = version
         self.tools = {}
         self.db = KanbanDB()
-        
+
+        # Auto-apply pending migrations
+        from kanban_mcp.setup import auto_migrate
+        auto_migrate(self.db.config)
+
         # Current project state
         self.current_project_id = None
         self.current_project_path = None
-        
+
         # Setup logging
         log_dir = Path.home() / ".kanban_mcp"
         log_dir.mkdir(exist_ok=True)
@@ -2194,13 +2536,14 @@ class KanbanMCPServer:
 
         # Silence noisy MySQL connector logging
         logging.getLogger('mysql.connector').setLevel(logging.WARNING)
-        
+
         self._register_tools()
         self.logger.info("Kanban MCP Server initialized")
-    
+
     def _get_project_id(self, project_dir: str = None) -> str:
-        """Get project ID from explicit path, env vars, or current project state.
-        
+        """Get project ID from explicit path, env vars,
+        or current project state.
+
         Priority:
         1. Explicit project_dir parameter
         2. KANBAN_PROJECT_DIR env var (explicitly passed in MCP config)
@@ -2210,27 +2553,29 @@ class KanbanMCPServer:
         """
         if project_dir:
             return self.db.ensure_project(project_dir)
-        
+
         # Check environment variables
-        env_project_dir = os.environ.get('KANBAN_PROJECT_DIR') or os.environ.get('CLAUDE_PROJECT_DIR')
+        env_project_dir = os.environ.get(
+            'KANBAN_PROJECT_DIR') or os.environ.get('CLAUDE_PROJECT_DIR')
         if env_project_dir:
             return self.db.ensure_project(env_project_dir)
-        
+
         if self.current_project_id:
             return self.current_project_id
-        
+
         raise ValueError(
-            "No project specified. Set KANBAN_PROJECT_DIR env var in MCP config, "
-            "or call set_current_project first."
-        )
-    
+            "No project specified."
+            " Set KANBAN_PROJECT_DIR"
+            " env var in MCP config, "
+            "or call set_current_project first.")
+
     def tool(self, name: str):
         """Decorator to register tools."""
         def decorator(func):
             sig = inspect.signature(func)
             properties = {}
             required = []
-            
+
             for param_name, param in sig.parameters.items():
                 param_type = "string"
                 if param.annotation == int:
@@ -2239,15 +2584,15 @@ class KanbanMCPServer:
                     param_type = "boolean"
                 elif param.annotation == float:
                     param_type = "number"
-                
+
                 properties[param_name] = {
                     "type": param_type,
                     "description": f"{param_name} parameter"
                 }
-                
+
                 if param.default == inspect.Parameter.empty:
                     required.append(param_name)
-            
+
             self.tools[name] = {
                 "function": func,
                 "description": func.__doc__.strip() if func.__doc__ else name,
@@ -2259,7 +2604,7 @@ class KanbanMCPServer:
             }
             return func
         return decorator
-    
+
     def _serialize_result(self, obj):
         """Convert result to JSON-serializable format."""
         if isinstance(obj, dict):
@@ -2270,25 +2615,28 @@ class KanbanMCPServer:
             return obj.isoformat()
         else:
             return obj
-    
+
     def _register_tools(self):
         """Register all kanban tools."""
-        
+
         # --- Project Context Tools ---
-        
+
         @self.tool("set_current_project")
         def set_current_project(project_dir: str) -> Dict[str, Any]:
-            """Set the current project context. Called at session start with $PWD."""
+            """Set the current project context.
+
+            Called at session start with $PWD.
+            """
             self.current_project_id = self.db.ensure_project(project_dir)
             self.current_project_path = project_dir
             project = self.db.get_project_by_id(self.current_project_id)
             return {
-                "success": True, 
+                "success": True,
                 "project_id": self.current_project_id,
                 "project_name": project['name'] if project else None,
                 "directory_path": project_dir
             }
-        
+
         @self.tool("get_current_project")
         def get_current_project() -> Dict[str, Any]:
             """Get the current project context."""
@@ -2301,14 +2649,17 @@ class KanbanMCPServer:
                 "project_name": project['name'] if project else None,
                 "directory_path": self.current_project_path
             }
-        
+
         # --- Item Creation/Management ---
-        
+
         @self.tool("new_item")
         def new_item(item_type: str, title: str,
                      description: str = "", priority: int = 3,
-                     complexity: int = 0, parent_id: int = 0) -> Dict[str, Any]:
-            """Create a new issue, todo, feature, epic, or diary entry for current project."""
+                     complexity: int = 0,
+                     parent_id: int = 0,
+                     ) -> Dict[str, Any]:
+            """Create a new issue, todo, feature, epic,
+            or diary entry for current project."""
             project_id = self._get_project_id()
             item_id = self.db.create_item(
                 project_id=project_id,
@@ -2321,14 +2672,16 @@ class KanbanMCPServer:
             )
             item = self.db.get_item(item_id)
             return {"success": True, "item": self._serialize_result(item)}
-        
+
         @self.tool("list_items")
         def list_items(item_type: str = "", status: str = "",
                        tags: str = "", tag_mode: str = "any",
                        limit: int = 50) -> Dict[str, Any]:
-            """List items for current project with optional type/status/tag filters."""
+            """List items for current project with
+            optional type/status/tag filters."""
             project_id = self._get_project_id()
-            tag_list = [t.strip() for t in tags.split(',') if t.strip()] if tags else None
+            tag_list = [t.strip() for t in tags.split(
+                ',') if t.strip()] if tags else None
             items = self.db.list_items(
                 project_id=project_id,
                 type_name=item_type if item_type else None,
@@ -2337,8 +2690,11 @@ class KanbanMCPServer:
                 tag_match_mode=tag_mode,
                 limit=limit
             )
-            return {"success": True, "items": self._serialize_result(items), "count": len(items)}
-        
+            return {
+                "success": True,
+                "items": self._serialize_result(items),
+                "count": len(items)}
+
         @self.tool("get_item")
         def get_item(item_id: int) -> Dict[str, Any]:
             """Get full details of a specific item."""
@@ -2346,31 +2702,31 @@ class KanbanMCPServer:
             if item:
                 return {"success": True, "item": self._serialize_result(item)}
             return {"success": False, "error": "Item not found"}
-        
+
         @self.tool("advance_status")
         def advance_status(item_id: int) -> Dict[str, Any]:
             """Move item to next status in its workflow."""
             result = self.db.advance_status(item_id)
             return self._serialize_result(result)
-        
+
         @self.tool("revert_status")
         def revert_status(item_id: int) -> Dict[str, Any]:
             """Move item to previous status in its workflow."""
             result = self.db.revert_status(item_id)
             return self._serialize_result(result)
-        
+
         @self.tool("set_status")
         def set_status(item_id: int, status: str) -> Dict[str, Any]:
             """Set item to a specific status (must be valid for item type)."""
             result = self.db.set_status(item_id, status)
             return self._serialize_result(result)
-        
+
         @self.tool("close_item")
         def close_item(item_id: int) -> Dict[str, Any]:
             """Mark item as done/closed."""
             result = self.db.close_item(item_id)
             return self._serialize_result(result)
-        
+
         @self.tool("delete_item")
         def delete_item(item_id: int) -> Dict[str, Any]:
             """Permanently delete an item."""
@@ -2378,12 +2734,20 @@ class KanbanMCPServer:
             return self._serialize_result(result)
 
         @self.tool("edit_item")
-        def edit_item(item_id: int, title: str = "", description: str = "",
-                      priority: int = 0, complexity: int = 0, parent_id: int = -1) -> Dict[str, Any]:
-            """Edit an existing item's title, description, priority, complexity, and/or parent.
+        def edit_item(item_id: int,
+                      title: str = "",
+                      description: str = "",
+                      priority: int = 0,
+                      complexity: int = 0,
+                      parent_id: int = -1) -> Dict[str,
+                                                   Any]:
+            """Edit an existing item's title, description,
+            priority, complexity, and/or parent.
 
-            Note: Empty string/zero means 'don't update this field'. To clear description,
-            use a single space. Complexity 0 means 'don't update'. Parent -1 means 'don't update',
+            Note: Empty string/zero means 'don't update
+            this field'. To clear description, use a
+            single space. Complexity 0 means 'don't
+            update'. Parent -1 means 'don't update',
             0 means 'remove parent'.
             """
             # Convert empty/zero to None (MCP passes defaults for unset params)
@@ -2398,7 +2762,8 @@ class KanbanMCPServer:
 
             # Handle parent_id change separately
             if parent_id != -1 and result.get('success', True):
-                parent_result = self.db.set_parent(item_id, parent_id if parent_id else None)
+                parent_result = self.db.set_parent(
+                    item_id, parent_id if parent_id else None)
                 if not parent_result.get('success'):
                     return self._serialize_result(parent_result)
                 # Refresh item data
@@ -2407,105 +2772,145 @@ class KanbanMCPServer:
             return self._serialize_result(result)
 
         # --- Updates/Progress ---
-        
+
         @self.tool("add_update")
         def add_update(content: str, item_ids: str = "") -> Dict[str, Any]:
-            """Add a progress update, optionally linked to items (comma-separated IDs)."""
+            """Add a progress update, optionally linked
+            to items (comma-separated IDs)."""
             project_id = self._get_project_id()
-            linked_ids = [int(x.strip()) for x in item_ids.split(',') if x.strip()] if item_ids else None
+            linked_ids = [int(x.strip()) for x in item_ids.split(
+                ',') if x.strip()] if item_ids else None
             update_id = self.db.add_update(project_id, content, linked_ids)
             return {"success": True, "update_id": update_id}
-        
+
         @self.tool("get_latest_update")
         def get_latest_update() -> Dict[str, Any]:
             """Get the most recent update for current project."""
             project_id = self._get_project_id()
             update = self.db.get_latest_update(project_id)
             if update:
-                return {"success": True, "update": self._serialize_result(update)}
+                return {
+                    "success": True,
+                    "update": self._serialize_result(update)}
             return {"success": False, "error": "No updates found"}
-        
+
         @self.tool("get_updates")
         def get_updates(limit: int = 20) -> Dict[str, Any]:
             """Get recent updates for current project."""
             project_id = self._get_project_id()
             updates = self.db.get_updates(project_id, limit)
-            return {"success": True, "updates": self._serialize_result(updates), "count": len(updates)}
-        
+            return {
+                "success": True,
+                "updates": self._serialize_result(updates),
+                "count": len(updates)}
+
         # --- Summary/Query Tools ---
-        
+
         @self.tool("project_summary")
         def project_summary() -> Dict[str, Any]:
             """Get summary of items by type and status for current project."""
             project_id = self._get_project_id()
             summary = self.db.project_summary(project_id)
             return {"success": True, "summary": summary}
-        
+
         @self.tool("get_active_items")
         def get_active_items() -> Dict[str, Any]:
             """Get items in 'in_progress' status for context during work."""
             project_id = self._get_project_id()
-            items = self.db.list_items(project_id=project_id, status_name="in_progress", limit=20)
-            return {"success": True, "items": self._serialize_result(items), "count": len(items)}
-        
+            items = self.db.list_items(
+                project_id=project_id,
+                status_name="in_progress",
+                limit=20)
+            return {
+                "success": True,
+                "items": self._serialize_result(items),
+                "count": len(items)}
+
         @self.tool("get_todos")
         def get_todos() -> Dict[str, Any]:
-            """Get items in 'backlog' status - the todo queue for current project."""
+            """Get items in 'backlog' status -
+            the todo queue for current project."""
             project_id = self._get_project_id()
-            items = self.db.list_items(project_id=project_id, status_name="backlog", limit=50)
-            return {"success": True, "items": self._serialize_result(items), "count": len(items)}
-        
+            items = self.db.list_items(
+                project_id=project_id,
+                status_name="backlog",
+                limit=50)
+            return {
+                "success": True,
+                "items": self._serialize_result(items),
+                "count": len(items)}
+
         # --- Relationship Tools ---
-        
+
         @self.tool("add_relationship")
-        def add_relationship(source_id: int, target_id: int, relationship_type: str) -> Dict[str, Any]:
+        def add_relationship(source_id: int, target_id: int,
+                             relationship_type: str) -> Dict[str, Any]:
             """Add a relationship between two items.
-            
+
             Types: 'blocks' (source blocks target from completing),
                    'depends_on' (source depends on target being complete),
                    'relates_to' (informational),
                    'duplicates' (informational)
             """
-            return self.db.add_relationship(source_id, target_id, relationship_type)
-        
+            return self.db.add_relationship(
+                source_id, target_id, relationship_type)
+
         @self.tool("remove_relationship")
-        def remove_relationship(source_id: int, target_id: int, relationship_type: str) -> Dict[str, Any]:
+        def remove_relationship(
+                source_id: int, target_id: int,
+                relationship_type: str,
+                ) -> Dict[str, Any]:
             """Remove a relationship between two items."""
-            return self.db.remove_relationship(source_id, target_id, relationship_type)
-        
+            return self.db.remove_relationship(
+                source_id, target_id, relationship_type)
+
         @self.tool("get_item_relationships")
         def get_item_relationships(item_id: int) -> Dict[str, Any]:
             """Get all relationships for an item (both directions)."""
-            return self._serialize_result(self.db.get_item_relationships(item_id))
-        
+            return self._serialize_result(
+                self.db.get_item_relationships(item_id))
+
         @self.tool("get_blocking_items")
         def get_blocking_items(item_id: int) -> Dict[str, Any]:
             """Get items that block this item from being completed."""
             blockers = self.db.get_blocking_items(item_id)
-            return {"success": True, "blockers": self._serialize_result(blockers), "count": len(blockers)}
+            return {
+                "success": True,
+                "blockers": self._serialize_result(blockers),
+                "count": len(blockers)}
 
         # --- Epic/Hierarchy Tools ---
 
         @self.tool("get_epic_progress")
         def get_epic_progress(item_id: int) -> Dict[str, Any]:
-            """Get progress stats for an epic: total, completed, percent, incomplete_items."""
+            """Get progress stats for an epic: total,
+            completed, percent, incomplete_items."""
             progress = self.db.get_epic_progress(item_id)
-            return {"success": True, "progress": self._serialize_result(progress)}
+            return {
+                "success": True,
+                "progress": self._serialize_result(progress)}
 
         @self.tool("set_parent")
         def set_parent(item_id: int, parent_id: int) -> Dict[str, Any]:
-            """Set or remove parent relationship. Use parent_id=0 to remove parent."""
-            result = self.db.set_parent(item_id, parent_id if parent_id else None)
+            """Set or remove parent relationship.
+            Use parent_id=0 to remove parent."""
+            result = self.db.set_parent(
+                item_id, parent_id if parent_id else None)
             return self._serialize_result(result)
 
         @self.tool("list_children")
-        def list_children(item_id: int, recursive: bool = False) -> Dict[str, Any]:
-            """Get children of an item. Set recursive=True to get all descendants."""
+        def list_children(
+                item_id: int, recursive: bool = False) -> Dict[str, Any]:
+            """Get children of an item.
+            Set recursive=True to get all descendants."""
             if recursive:
                 children = self.db.get_all_descendants(item_id)
             else:
                 children = self.db.get_children(item_id)
-            return {"success": True, "children": self._serialize_result(children), "count": len(children)}
+            return {
+                "success": True,
+                "children": self._serialize_result(children),
+                "count": len(children)}
 
         # --- Tag Tools ---
 
@@ -2514,7 +2919,10 @@ class KanbanMCPServer:
             """List all tags in current project with usage counts."""
             project_id = self._get_project_id()
             tags = self.db.get_project_tags(project_id)
-            return {"success": True, "tags": self._serialize_result(tags), "count": len(tags)}
+            return {
+                "success": True,
+                "tags": self._serialize_result(tags),
+                "count": len(tags)}
 
         @self.tool("add_tag")
         def add_tag(item_id: int, tag_name: str) -> Dict[str, Any]:
@@ -2532,10 +2940,14 @@ class KanbanMCPServer:
         def get_item_tags(item_id: int) -> Dict[str, Any]:
             """Get all tags assigned to an item."""
             tags = self.db.get_item_tags(item_id)
-            return {"success": True, "tags": self._serialize_result(tags), "count": len(tags)}
+            return {
+                "success": True,
+                "tags": self._serialize_result(tags),
+                "count": len(tags)}
 
         @self.tool("update_tag")
-        def update_tag(tag_id: int, name: str = "", color: str = "") -> Dict[str, Any]:
+        def update_tag(tag_id: int, name: str = "",
+                       color: str = "") -> Dict[str, Any]:
             """Update tag name and/or color."""
             result = self.db.update_tag(
                 tag_id,
@@ -2554,16 +2966,25 @@ class KanbanMCPServer:
 
         @self.tool("get_status_history")
         def get_status_history(item_id: int) -> Dict[str, Any]:
-            """Get status change history for an item, ordered chronologically."""
+            """Get status change history for an item,
+            ordered chronologically."""
             history = self.db.get_status_history(item_id)
-            return {"success": True, "history": self._serialize_result(history), "count": len(history)}
+            return {
+                "success": True,
+                "history": self._serialize_result(history),
+                "count": len(history)}
 
         @self.tool("get_item_metrics")
         def get_item_metrics(item_id: int) -> Dict[str, Any]:
-            """Get calculated metrics for an item: lead_time, cycle_time, time_in_each_status, revert_count, current_age (all times in hours)."""
+            """Get calculated metrics for an item:
+            lead_time, cycle_time,
+            time_in_each_status, revert_count,
+            current_age (all times in hours)."""
             metrics = self.db.get_item_metrics(item_id)
             if metrics:
-                return {"success": True, "metrics": self._serialize_result(metrics)}
+                return {
+                    "success": True,
+                    "metrics": self._serialize_result(metrics)}
             return {"success": False, "error": "Item not found or no history"}
 
         # --- Export Tool ---
@@ -2586,15 +3007,20 @@ class KanbanMCPServer:
 
             Args:
                 format: Output format - 'json', 'yaml', or 'markdown'
-                item_type: Filter by type (issue, feature, epic, todo, diary, question)
-                status: Filter by status (backlog, todo, in_progress, review, done, closed)
-                item_ids: Comma-separated item IDs to export (overrides type/status filters)
+                item_type: Filter by type (issue,
+                    feature, epic, todo, diary, question)
+                status: Filter by status (backlog, todo,
+                    in_progress, review, done, closed)
+                item_ids: Comma-separated item IDs to
+                    export (overrides type/status filters)
                 include_tags: Include tag data for each item (default: True)
                 include_relationships: Include relationship data
-                include_metrics: Include calculated metrics (lead_time, cycle_time, etc.)
+                include_metrics: Include calculated
+                    metrics (lead_time, cycle_time, etc.)
                 include_updates: Include project updates
                 include_epic_progress: Include epic progress stats
-                detailed: For markdown, show detailed item info instead of tables
+                detailed: For markdown, show detailed
+                    item info instead of tables
                 limit: Maximum items to export (default: 500)
 
             Returns:
@@ -2608,7 +3034,8 @@ class KanbanMCPServer:
             # Parse item_ids if provided
             parsed_item_ids = None
             if item_ids:
-                parsed_item_ids = [int(x.strip()) for x in item_ids.split(',') if x.strip()]
+                parsed_item_ids = [int(x.strip())
+                                   for x in item_ids.split(',') if x.strip()]
 
             try:
                 # Build export data
@@ -2626,12 +3053,14 @@ class KanbanMCPServer:
                 )
 
                 # Format output
-                content = export_to_format(data, format=format, detailed=detailed)
+                content = export_to_format(
+                    data, format=format, detailed=detailed)
 
                 # Write to temp file
                 project = self.db.get_project_by_id(project_id)
                 project_name = project['name'] if project else 'export'
-                safe_name = ''.join(c for c in project_name if c.isalnum() or c in '-_')[:50]
+                safe_name = ''.join(
+                    c for c in project_name if c.isalnum() or c in '-_')[:50]
                 ext = get_file_extension(format)
 
                 with tempfile.NamedTemporaryFile(
@@ -2680,7 +3109,11 @@ class KanbanMCPServer:
         # --- File Linking Tools ---
 
         @self.tool("link_file")
-        def link_file(item_id: int, file_path: str, line_start: int = None, line_end: int = None) -> Dict[str, Any]:
+        def link_file(item_id: int,
+                      file_path: str,
+                      line_start: int = None,
+                      line_end: int = None) -> Dict[str,
+                                                    Any]:
             """Link a file (or file region) to an item.
 
             Args:
@@ -2693,25 +3126,32 @@ class KanbanMCPServer:
                 Dict with success status and link_id if successful
             """
             try:
-                result = self.db.link_file(item_id, file_path, line_start, line_end)
+                result = self.db.link_file(
+                    item_id, file_path, line_start, line_end)
                 return result
             except ValueError as e:
                 return {"success": False, "error": str(e)}
 
         @self.tool("unlink_file")
-        def unlink_file(item_id: int, file_path: str, line_start: int = None, line_end: int = None) -> Dict[str, Any]:
+        def unlink_file(item_id: int,
+                        file_path: str,
+                        line_start: int = None,
+                        line_end: int = None) -> Dict[str,
+                                                      Any]:
             """Remove a file link from an item.
 
             Args:
                 item_id: The item to unlink the file from
                 file_path: Relative path to the file
-                line_start: Optional starting line number (must match to unlink)
+                line_start: Optional starting line number
+                    (must match to unlink)
                 line_end: Optional ending line number (must match to unlink)
 
             Returns:
                 Dict with success status
             """
-            return self.db.unlink_file(item_id, file_path, line_start, line_end)
+            return self.db.unlink_file(
+                item_id, file_path, line_start, line_end)
 
         @self.tool("get_item_files")
         def get_item_files(item_id: int) -> Dict[str, Any]:
@@ -2733,8 +3173,11 @@ class KanbanMCPServer:
         # --- Decision History Tools ---
 
         @self.tool("add_decision")
-        def add_decision(item_id: int, choice: str, rejected_alternatives: str = "",
-                         rationale: str = "") -> Dict[str, Any]:
+        def add_decision(item_id: int,
+                         choice: str,
+                         rejected_alternatives: str = "",
+                         rationale: str = "") -> Dict[str,
+                                                      Any]:
             """Add a decision record to an item.
 
             Args:
@@ -2772,21 +3215,29 @@ class KanbanMCPServer:
         # --- Semantic Search Tools ---
 
         @self.tool("semantic_search")
-        def semantic_search(query: str, limit: int = 10, source_types: str = "",
-                           threshold: float = 0.0) -> Dict[str, Any]:
+        def semantic_search(query: str,
+                            limit: int = 10,
+                            source_types: str = "",
+                            threshold: float = 0.0) -> Dict[str,
+                                                            Any]:
             """Search items, decisions, and updates by semantic similarity.
 
             Args:
                 query: Natural language search query
                 limit: Maximum results to return (default: 10)
-                source_types: Comma-separated types to search (item,decision,update). Empty = all
+                source_types: Comma-separated types to
+                    search (item,decision,update).
+                    Empty = all
                 threshold: Minimum similarity score 0.0-1.0 (default: 0.0)
 
             Returns:
-                Dict with success, results list (each with source_type, source_id, similarity, title/snippet)
+                Dict with success, results list (each
+                with source_type, source_id, similarity,
+                title/snippet)
             """
             project_id = self._get_project_id()
-            type_list = [t.strip() for t in source_types.split(',') if t.strip()] if source_types else None
+            type_list = [t.strip() for t in source_types.split(
+                ',') if t.strip()] if source_types else None
             results = self.db.semantic_search(
                 project_id=project_id,
                 query=query,
@@ -2802,7 +3253,7 @@ class KanbanMCPServer:
 
         @self.tool("find_similar")
         def find_similar(source_type: str, source_id: int, limit: int = 5,
-                        threshold: float = 0.0) -> Dict[str, Any]:
+                         threshold: float = 0.0) -> Dict[str, Any]:
             """Find items similar to a given item, decision, or update.
 
             Args:
@@ -2831,30 +3282,36 @@ class KanbanMCPServer:
             """Rebuild all embeddings for the current project.
 
             Args:
-                source_types: Comma-separated types to rebuild (item,decision,update). Empty = all
+                source_types: Comma-separated types to
+                    rebuild (item,decision,update).
+                    Empty = all
 
             Returns:
                 Dict with success, processed count, and any errors
             """
             project_id = self._get_project_id()
-            type_list = [t.strip() for t in source_types.split(',') if t.strip()] if source_types else None
+            type_list = [t.strip() for t in source_types.split(
+                ',') if t.strip()] if source_types else None
             result = self.db.rebuild_embeddings(project_id, type_list)
             return self._serialize_result(result)
 
         # --- Timeline Tools ---
 
         @self.tool("get_item_timeline")
-        def get_item_timeline(item_id: int, limit: int = 100) -> Dict[str, Any]:
+        def get_item_timeline(
+                item_id: int, limit: int = 100) -> Dict[str, Any]:
             """Get activity timeline for a specific item.
 
-            Returns unified timeline of status changes, decisions, updates, and git commits.
+            Returns unified timeline of status changes,
+            decisions, updates, and git commits.
 
             Args:
                 item_id: The item to get timeline for
                 limit: Maximum entries to return (default: 100)
 
             Returns:
-                Dict with success, entries list (sorted by timestamp desc), entry_count
+                Dict with success, entries list
+                (sorted by timestamp desc), entry_count
             """
             # Get repo path for git integration
             repo_path = self.current_project_path
@@ -2870,13 +3327,15 @@ class KanbanMCPServer:
         def get_project_timeline(limit: int = 100) -> Dict[str, Any]:
             """Get activity timeline for the entire project.
 
-            Returns unified timeline of all status changes, decisions, updates, and git commits.
+            Returns unified timeline of all status
+            changes, decisions, updates, and git commits.
 
             Args:
                 limit: Maximum entries to return (default: 100)
 
             Returns:
-                Dict with success, entries list (sorted by timestamp desc), entry_count
+                Dict with success, entries list
+                (sorted by timestamp desc), entry_count
             """
             project_id = self._get_project_id()
             repo_path = self.current_project_path
@@ -2893,9 +3352,11 @@ class KanbanMCPServer:
         try:
             method = request.get("method")
             params = request.get("params", {})
-            
-            self.logger.info(f"Request: method={method}, id={request.get('id')}")
-            
+
+            req_id = request.get('id')
+            self.logger.info(
+                f"Request: method={method}, id={req_id}")
+
             if method == "initialize":
                 return {
                     "jsonrpc": "2.0",
@@ -2909,7 +3370,7 @@ class KanbanMCPServer:
                         }
                     }
                 }
-            
+
             elif method == "tools/list":
                 tools_list = [
                     {
@@ -2924,27 +3385,32 @@ class KanbanMCPServer:
                     "id": request.get("id"),
                     "result": {"tools": tools_list}
                 }
-            
+
             elif method == "tools/call":
                 tool_name = params.get("name")
                 arguments = params.get("arguments", {})
-                
+
                 self.logger.info(f"Tool call: {tool_name}")
-                
+
                 if tool_name not in self.tools:
                     return {
                         "jsonrpc": "2.0",
                         "id": request.get("id"),
-                        "error": {"code": -32602, "message": f"Unknown tool: {tool_name}"}
-                    }
-                
+                        "error": {
+                            "code": -32602,
+                            "message": f"Unknown tool: {tool_name}"}}
+
                 try:
                     result = self.tools[tool_name]["function"](**arguments)
                     return {
                         "jsonrpc": "2.0",
                         "id": request.get("id"),
                         "result": {
-                            "content": [{"type": "text", "text": json.dumps(result, indent=2)}]
+                            "content": [{
+                                "type": "text",
+                                "text": json.dumps(
+                                    result, indent=2),
+                            }]
                         }
                     }
                 except Exception as e:
@@ -2952,52 +3418,58 @@ class KanbanMCPServer:
                     return {
                         "jsonrpc": "2.0",
                         "id": request.get("id"),
-                        "error": {"code": -32603, "message": f"Tool execution failed: {str(e)}"}
-                    }
-            
+                        "error": {
+                            "code": -32603,
+                            "message": f"Tool execution failed: {e}"}}
+
             else:
                 return {
                     "jsonrpc": "2.0",
                     "id": request.get("id"),
-                    "error": {"code": -32601, "message": f"Method not found: {method}"}
-                }
-        
+                    "error": {
+                        "code": -32601,
+                        "message": f"Method not found: {method}"}}
+
         except Exception as e:
             self.logger.error(f"Request error: {e}", exc_info=True)
             return {
                 "jsonrpc": "2.0",
                 "id": request.get("id"),
-                "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
-            }
-    
+                "error": {
+                    "code": -32603,
+                    "message": f"Internal error: {e}"}}
+
     async def run(self):
         """Main server loop - STDIO JSON-RPC."""
         self.logger.info(f"Starting {self.name} server")
-        
+
         try:
             while True:
                 line = sys.stdin.readline()
                 if not line:
                     self.logger.info("EOF, stopping server")
                     break
-                
+
                 try:
                     request = json.loads(line.strip())
                     response = await self.handle_request(request)
-                    
+
                     if 'id' not in request:
                         continue  # Notification, no response
-                    
+
                     print(json.dumps(response), flush=True)
-                    
+
                 except json.JSONDecodeError as e:
                     self.logger.error(f"JSON decode error: {e}")
                     print(json.dumps({
                         "jsonrpc": "2.0",
                         "id": None,
-                        "error": {"code": -32700, "message": f"Parse error: {str(e)}"}
+                        "error": {
+                            "code": -32700,
+                            "message": f"Parse error: {str(e)}",
+                        }
                     }), flush=True)
-        
+
         except KeyboardInterrupt:
             self.logger.info("Server stopped by user")
         except Exception as e:

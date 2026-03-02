@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kanban-mcp"
-version = "0.1.0"
+version = "0.1.6"
 description = "Kanban board MCP server for Claude Code — track issues, features, and todos"
 readme = "README.md"
 license = "MIT"
@@ -27,6 +27,8 @@ dependencies = [
     "flask>=2.0.0",
     "GitPython>=3.1.0",
     "python-dotenv>=1.0.0",
+    "waitress>=2.1.0",
+    "gunicorn>=21.2.0; sys_platform != 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -64,3 +66,11 @@ kanban_mcp = [
     "migrations/*.sql",
     "hooks/*.py",
 ]
+
+[tool.flake8]
+max-line-length = 79
+exclude = [".git", "__pycache__", "build", "dist", "*.egg-info", "node_modules"]
+
+[tool.bandit]
+exclude_dirs = ["tests", "node_modules"]
+skips = ["B404", "B603", "B104"]

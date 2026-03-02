@@ -1,0 +1,15 @@
+#!/bin/bash
+# Pre-commit hook: lint, security scan, and test
+
+set -e
+
+echo "Running flake8..."
+python3.13 -m flake8 kanban_mcp/ tests/
+
+echo "Running bandit..."
+python3.13 -m bandit -r kanban_mcp/ -c pyproject.toml -q
+
+echo "Running tests..."
+python3.13 -m pytest tests/ -q
+
+echo "All checks passed."

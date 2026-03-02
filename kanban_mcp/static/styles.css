@@ -633,26 +633,6 @@
             border-radius: 50%;
         }
 
-        /* Updates Section */
-        .updates-drawer {
-            position: fixed;
-            top: 64px;
-            right: 0;
-            bottom: 0;
-            width: 350px;
-            background-color: var(--md-sys-color-surface);
-            box-shadow: -2px 0 5px rgba(0,0,0,0.2);
-            transform: translateX(100%);
-            transition: transform 0.3s ease;
-            z-index: 20;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .updates-drawer.open {
-            transform: translateX(0);
-        }
-
         .drawer-header {
             padding: var(--spacing-md);
             border-bottom: 1px solid rgba(255,255,255,0.05);
@@ -676,65 +656,63 @@
             padding: var(--spacing-md);
         }
 
-        /* Update Groups */
-        .update-group {
-            margin-bottom: var(--spacing-lg);
+        /* Activity Panel — Inline Update Form */
+        .activity-new-update {
+            padding: var(--spacing-sm) var(--spacing-md);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
         }
 
-        .update-group-header {
-            font-size: 13px;
-            font-weight: 500;
-            color: var(--text-high-emphasis);
-            padding: var(--spacing-sm) 0;
+        .activity-new-update-form .form-textarea {
+            width: 100%;
+            resize: vertical;
+            min-height: 60px;
             margin-bottom: var(--spacing-sm);
-            border-bottom: 1px solid rgba(255,255,255,0.1);
+            box-sizing: border-box;
+        }
+
+        .activity-update-controls {
             display: flex;
-            align-items: center;
             gap: var(--spacing-sm);
+            align-items: flex-start;
         }
 
-        .update-group-header i {
-            font-size: 16px;
-            color: var(--md-sys-color-primary);
-        }
-
-        .update-group-header.general {
-            color: var(--text-medium-emphasis);
-        }
-
-        .update-group-header.general i {
-            color: var(--text-medium-emphasis);
-        }
-
-        .update-item {
-            margin-bottom: var(--spacing-md);
-            position: relative;
-            padding-left: var(--spacing-md);
-            border-left: 2px solid var(--md-sys-color-surface-variant);
-        }
-
-        .update-item::before {
-            content: '';
-            position: absolute;
-            left: -5px;
-            top: 0;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background-color: var(--md-sys-color-primary);
-        }
-
-        .update-meta {
+        .activity-update-controls select {
+            flex: 1;
+            min-height: 32px;
             font-size: 12px;
-            color: var(--text-disabled);
-            margin-bottom: 4px;
         }
 
-        .update-text {
+        .activity-update-actions {
+            display: flex;
+            gap: var(--spacing-xs);
+            flex-shrink: 0;
+        }
+
+        .activity-new-update-toggle {
+            padding: 0 var(--spacing-md);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .activity-new-update-toggle .btn {
+            width: 100%;
+            justify-content: flex-start;
+            gap: var(--spacing-sm);
             font-size: 13px;
+            padding: var(--spacing-sm) 0;
+        }
+
+        .activity-new-update-toggle .btn i {
+            font-size: 18px;
+        }
+
+        /* Timeline update full-text display */
+        .timeline-update-content {
+            white-space: pre-wrap;
+            font-size: 12px;
             color: var(--text-medium-emphasis);
             line-height: 1.5;
-            white-space: pre-wrap;
+            max-height: 200px;
+            overflow-y: auto;
         }
 
         /* FAB container */
@@ -816,11 +794,6 @@
             transform: translateY(-50%);
             color: var(--text-disabled);
             font-size: 18px;
-        }
-
-        .update-group.hidden,
-        .update-item.hidden {
-            display: none;
         }
 
         /* Modal Styles */
@@ -1771,11 +1744,3 @@
             color: var(--text-medium-emphasis);
         }
 
-        /* Secondary FAB Style for Timeline */
-        .fab.secondary {
-            background-color: var(--md-sys-color-secondary);
-        }
-
-        .fab.secondary:hover {
-            background-color: #02c4b5;
-        }

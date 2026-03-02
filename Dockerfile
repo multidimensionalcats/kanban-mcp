@@ -2,10 +2,11 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-COPY pyproject.toml .
-COPY kanban_mcp/ kanban_mcp/
-RUN pip install --no-cache-dir . gunicorn
+RUN pip install --no-cache-dir kanban-mcp gunicorn
+
+COPY entrypoint.sh .
+RUN chmod +x entrypoint.sh
 
 EXPOSE 5000
 
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "kanban_mcp.web:app"]
+ENTRYPOINT ["./entrypoint.sh"]
