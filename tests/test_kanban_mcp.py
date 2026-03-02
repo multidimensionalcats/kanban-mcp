@@ -4,117 +4,145 @@ Unit tests for Kanban MCP Server.
 Tests define target behavior - written BEFORE implementation.
 """
 
-import logging
 import os
 import unittest
-import sys
-from pathlib import Path
 from datetime import datetime
 from unittest.mock import MagicMock, patch
-
 
 
 def cleanup_test_project(db, project_path):
     """Clean up all test data for a project including the project itself."""
     project_id = db.hash_project_path(project_path)
+    pid = project_id
+    sub = "(SELECT id FROM items WHERE project_id = %s)"
     with db._db_cursor(commit=True) as cursor:
-        cursor.execute("DELETE FROM update_items WHERE update_id IN (SELECT id FROM updates WHERE project_id = %s)", (project_id,))
-        # Clean up embeddings for items in this project
-        cursor.execute("DELETE FROM embeddings WHERE source_type = 'item' AND source_id IN (SELECT id FROM items WHERE project_id = %s)", (project_id,))
-        cursor.execute("DELETE FROM embeddings WHERE source_type = 'decision' AND source_id IN (SELECT id FROM item_decisions WHERE item_id IN (SELECT id FROM items WHERE project_id = %s))", (project_id,))
-        cursor.execute("DELETE FROM embeddings WHERE source_type = 'update' AND source_id IN (SELECT id FROM updates WHERE project_id = %s)", (project_id,))
-        cursor.execute("DELETE FROM updates WHERE project_id = %s", (project_id,))
-        cursor.execute("DELETE FROM item_tags WHERE item_id IN (SELECT id FROM items WHERE project_id = %s)", (project_id,))
-        cursor.execute("DELETE FROM item_decisions WHERE item_id IN (SELECT id FROM items WHERE project_id = %s)", (project_id,))
-        cursor.execute("DELETE FROM item_files WHERE item_id IN (SELECT id FROM items WHERE project_id = %s)", (project_id,))
-        cursor.execute("DELETE FROM status_history WHERE item_id IN (SELECT id FROM items WHERE project_id = %s)", (project_id,))
-        cursor.execute("DELETE FROM item_relationships WHERE source_item_id IN (SELECT id FROM items WHERE project_id = %s) OR target_item_id IN (SELECT id FROM items WHERE project_id = %s)", (project_id, project_id))
-        cursor.execute("DELETE FROM items WHERE project_id = %s", (project_id,))
-        cursor.execute("DELETE FROM tags WHERE project_id = %s", (project_id,))
+        cursor.execute(
+            "DELETE FROM update_items WHERE update_id IN "
+            "(SELECT id FROM updates WHERE project_id = %s)",
+            (pid,))
+        cursor.execute(
+            "DELETE FROM embeddings WHERE source_type = 'item'"
+            " AND source_id IN " + sub, (pid,))
+        cursor.execute(
+            "DELETE FROM embeddings WHERE source_type = "
+            "'decision' AND source_id IN "
+            "(SELECT id FROM item_decisions WHERE "
+            "item_id IN " + sub + ")", (pid,))
+        cursor.execute(
+            "DELETE FROM embeddings WHERE source_type = "
+            "'update' AND source_id IN "
+            "(SELECT id FROM updates WHERE "
+            "project_id = %s)", (pid,))
+        cursor.execute(
+            "DELETE FROM updates WHERE project_id = %s",
+            (pid,))
+        cursor.execute(
+            "DELETE FROM item_tags WHERE item_id IN "
+            + sub, (pid,))
+        cursor.execute(
+            "DELETE FROM item_decisions WHERE item_id IN "
+            + sub, (pid,))
+        cursor.execute(
+            "DELETE FROM item_files WHERE item_id IN "
+            + sub, (pid,))
+        cursor.execute(
+            "DELETE FROM status_history WHERE item_id IN "
+            + sub, (pid,))
+        cursor.execute(
+            "DELETE FROM item_relationships WHERE "
+            "source_item_id IN " + sub
+            + " OR target_item_id IN " + sub,
+            (pid, pid))
+        cursor.execute(
+            "DELETE FROM items WHERE project_id = %s",
+            (pid,))
+        cursor.execute(
+            "DELETE FROM tags WHERE project_id = %s",
+            (pid,))
         cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
 
 
 class TestKanbanDB(unittest.TestCase):
     """Test the KanbanDB database operations."""
-    
+
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp.core import KanbanDB
         """Set up test database connection."""
         from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         # Use a test project path
         cls.test_project_path = "/tmp/test-kanban-project"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
-    
+
     def setUp(self):
         """Ensure clean state before each test."""
         cleanup_test_project(self.db, self.test_project_path)
-    
+
     def tearDown(self):
         """Clean up after each test."""
         cleanup_test_project(self.db, self.test_project_path)
-    
+
     # --- Project Tests ---
-    
+
     def test_hash_project_path_deterministic(self):
         """Hash should be deterministic for same path."""
         hash1 = self.db.hash_project_path("/home/user/project")
         hash2 = self.db.hash_project_path("/home/user/project")
         self.assertEqual(hash1, hash2)
-    
+
     def test_hash_project_path_length(self):
         """Hash should be 16 characters."""
         hash_id = self.db.hash_project_path("/some/path")
         self.assertEqual(len(hash_id), 16)
-    
+
     def test_hash_project_path_different_paths(self):
         """Different paths should produce different hashes."""
         hash1 = self.db.hash_project_path("/path/one")
         hash2 = self.db.hash_project_path("/path/two")
         self.assertNotEqual(hash1, hash2)
-    
+
     def test_ensure_project_creates_new(self):
         """ensure_project should create project if not exists."""
-        project_id = self.db.ensure_project(self.test_project_path, "test-project")
+        project_id = self.db.ensure_project(
+            self.test_project_path, "test-project")
         self.assertEqual(project_id, self.test_project_id)
-        
+
         project = self.db.get_project_by_path(self.test_project_path)
         self.assertIsNotNone(project)
         self.assertEqual(project['name'], "test-project")
-    
+
     def test_ensure_project_idempotent(self):
         """ensure_project should be idempotent."""
         id1 = self.db.ensure_project(self.test_project_path, "test-project")
         id2 = self.db.ensure_project(self.test_project_path, "different-name")
         self.assertEqual(id1, id2)
-    
+
     # --- Item Type/Status Tests ---
-    
+
     def test_get_type_id_valid(self):
         """get_type_id should return ID for valid types."""
         issue_id = self.db.get_type_id("issue")
         self.assertIsNotNone(issue_id)
         self.assertIsInstance(issue_id, int)
-    
+
     def test_get_type_id_invalid(self):
         """get_type_id should raise for invalid types."""
         with self.assertRaises(ValueError):
             self.db.get_type_id("invalid_type")
-    
+
     def test_get_status_id_valid(self):
         """get_status_id should return ID for valid statuses."""
         status_id = self.db.get_status_id("backlog")
         self.assertIsNotNone(status_id)
         self.assertIsInstance(status_id, int)
-    
+
     def test_get_status_id_invalid(self):
         """get_status_id should raise for invalid statuses."""
         with self.assertRaises(ValueError):
             self.db.get_status_id("invalid_status")
-    
+
     # --- Item CRUD Tests ---
-    
+
     def test_create_item_basic(self):
         """create_item should create item with minimal fields."""
         self.db.ensure_project(self.test_project_path)
@@ -125,7 +153,7 @@ class TestKanbanDB(unittest.TestCase):
         )
         self.assertIsNotNone(item_id)
         self.assertIsInstance(item_id, int)
-    
+
     def test_create_item_with_all_fields(self):
         """create_item should create item with all fields."""
         self.db.ensure_project(self.test_project_path)
@@ -136,13 +164,13 @@ class TestKanbanDB(unittest.TestCase):
             description="Feature description",
             priority=1
         )
-        
+
         item = self.db.get_item(item_id)
         self.assertEqual(item['title'], "New Feature")
         self.assertEqual(item['description'], "Feature description")
         self.assertEqual(item['priority'], 1)
         self.assertEqual(item['type_name'], "feature")
-    
+
     def test_create_item_default_status_is_backlog(self):
         """New issues/todos/features should start in backlog."""
         self.db.ensure_project(self.test_project_path)
@@ -153,7 +181,7 @@ class TestKanbanDB(unittest.TestCase):
         )
         item = self.db.get_item(item_id)
         self.assertEqual(item['status_name'], "backlog")
-    
+
     def test_create_diary_default_status_is_done(self):
         """Diary entries should start in done status."""
         self.db.ensure_project(self.test_project_path)
@@ -164,12 +192,12 @@ class TestKanbanDB(unittest.TestCase):
         )
         item = self.db.get_item(item_id)
         self.assertEqual(item['status_name'], "done")
-    
+
     def test_get_item_not_found(self):
         """get_item should return None for non-existent item."""
         item = self.db.get_item(99999)
         self.assertIsNone(item)
-    
+
     def test_delete_item(self):
         """delete_item should remove item."""
         self.db.ensure_project(self.test_project_path)
@@ -178,15 +206,15 @@ class TestKanbanDB(unittest.TestCase):
             type_name="issue",
             title="To Delete"
         )
-        
+
         result = self.db.delete_item(item_id)
         self.assertTrue(result['success'])
-        
+
         item = self.db.get_item(item_id)
         self.assertIsNone(item)
-    
+
     # --- Status Workflow Tests ---
-    
+
     def test_advance_status_issue(self):
         """advance_status should move issue through workflow."""
         self.db.ensure_project(self.test_project_path)
@@ -195,31 +223,34 @@ class TestKanbanDB(unittest.TestCase):
             type_name="issue",
             title="Test Issue"
         )
-        
+
         # backlog -> todo
         result = self.db.advance_status(item_id)
         self.assertTrue(result['success'])
         self.assertEqual(result['new_status'], 'todo')
-        
+
         # todo -> in_progress
         result = self.db.advance_status(item_id)
         self.assertEqual(result['new_status'], 'in_progress')
-    
+
     def test_advance_status_todo_skips_review(self):
-        """Todos should skip review status (todo workflow: backlog->todo->in_progress->done)."""
+        """Todos should skip review status.
+
+        Todo workflow: backlog->todo->in_progress->done.
+        """
         self.db.ensure_project(self.test_project_path)
         item_id = self.db.create_item(
             project_id=self.test_project_id,
             type_name="todo",
             title="Test Todo"
         )
-        
+
         self.db.advance_status(item_id)  # backlog -> todo
         self.db.advance_status(item_id)  # todo -> in_progress
-        result = self.db.advance_status(item_id)  # in_progress -> done (not review)
-        
+        result = self.db.advance_status(item_id)  # -> done
+
         self.assertEqual(result['new_status'], 'done')
-    
+
     def test_revert_status(self):
         """revert_status should move item back in workflow."""
         self.db.ensure_project(self.test_project_path)
@@ -228,14 +259,14 @@ class TestKanbanDB(unittest.TestCase):
             type_name="issue",
             title="Test Issue"
         )
-        
+
         self.db.advance_status(item_id)  # backlog -> todo
         self.db.advance_status(item_id)  # todo -> in_progress
-        
+
         result = self.db.revert_status(item_id)  # in_progress -> todo
         self.assertTrue(result['success'])
         self.assertEqual(result['new_status'], 'todo')
-    
+
     def test_set_status_valid(self):
         """set_status should set valid status for type."""
         self.db.ensure_project(self.test_project_path)
@@ -244,11 +275,11 @@ class TestKanbanDB(unittest.TestCase):
             type_name="issue",
             title="Test Issue"
         )
-        
+
         result = self.db.set_status(item_id, "in_progress")
         self.assertTrue(result['success'])
         self.assertEqual(result['new_status'], 'in_progress')
-    
+
     def test_set_status_invalid_for_type(self):
         """set_status should reject status not in type's workflow."""
         self.db.ensure_project(self.test_project_path)
@@ -257,10 +288,10 @@ class TestKanbanDB(unittest.TestCase):
             type_name="diary",  # diary only has 'done' status
             title="Test Diary"
         )
-        
+
         with self.assertRaises(ValueError):
             self.db.set_status(item_id, "in_progress")
-    
+
     def test_close_item(self):
         """close_item should set final status."""
         self.db.ensure_project(self.test_project_path)
@@ -269,107 +300,114 @@ class TestKanbanDB(unittest.TestCase):
             type_name="issue",
             title="Test Issue"
         )
-        
+
         result = self.db.close_item(item_id)
         self.assertTrue(result['success'])
         self.assertEqual(result['new_status'], 'closed')
-    
+
     # --- List/Filter Tests ---
-    
+
     def test_list_items_empty(self):
         """list_items should return empty list for new project."""
         self.db.ensure_project(self.test_project_path)
         items = self.db.list_items(project_id=self.test_project_id)
         self.assertEqual(items, [])
-    
+
     def test_list_items_by_project(self):
         """list_items should filter by project."""
         self.db.ensure_project(self.test_project_path)
         self.db.create_item(self.test_project_id, "issue", "Issue 1")
         self.db.create_item(self.test_project_id, "issue", "Issue 2")
-        
+
         items = self.db.list_items(project_id=self.test_project_id)
         self.assertEqual(len(items), 2)
-    
+
     def test_list_items_by_type(self):
         """list_items should filter by type."""
         self.db.ensure_project(self.test_project_path)
         self.db.create_item(self.test_project_id, "issue", "Issue")
         self.db.create_item(self.test_project_id, "todo", "Todo")
-        
-        issues = self.db.list_items(project_id=self.test_project_id, type_name="issue")
+
+        issues = self.db.list_items(
+            project_id=self.test_project_id,
+            type_name="issue")
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0]['type_name'], 'issue')
-    
+
     def test_list_items_by_status(self):
         """list_items should filter by status."""
         self.db.ensure_project(self.test_project_path)
         item1 = self.db.create_item(self.test_project_id, "issue", "Issue 1")
         self.db.create_item(self.test_project_id, "issue", "Issue 2")
         self.db.advance_status(item1)  # Move to todo
-        
-        backlog_items = self.db.list_items(project_id=self.test_project_id, status_name="backlog")
+
+        backlog_items = self.db.list_items(
+            project_id=self.test_project_id,
+            status_name="backlog")
         self.assertEqual(len(backlog_items), 1)
-    
+
     def test_get_backlog_items(self):
         """Should be able to get items in backlog status."""
         self.db.ensure_project(self.test_project_path)
         self.db.create_item(self.test_project_id, "issue", "Backlog Issue")
-        item2 = self.db.create_item(self.test_project_id, "todo", "In Progress Todo")
+        item2 = self.db.create_item(
+            self.test_project_id, "todo", "In Progress Todo")
         self.db.advance_status(item2)  # backlog -> todo
         self.db.advance_status(item2)  # todo -> in_progress
-        
-        backlog = self.db.list_items(project_id=self.test_project_id, status_name="backlog")
+
+        backlog = self.db.list_items(
+            project_id=self.test_project_id,
+            status_name="backlog")
         self.assertEqual(len(backlog), 1)
         self.assertEqual(backlog[0]['title'], "Backlog Issue")
-    
+
     # --- Updates Tests ---
-    
+
     def test_add_update_no_items(self):
         """add_update should work without linked items."""
         self.db.ensure_project(self.test_project_path)
         update_id = self.db.add_update(self.test_project_id, "Progress note")
         self.assertIsNotNone(update_id)
         self.assertIsInstance(update_id, int)
-    
+
     def test_add_update_with_items(self):
         """add_update should link to items."""
         self.db.ensure_project(self.test_project_path)
         item1 = self.db.create_item(self.test_project_id, "issue", "Issue 1")
         item2 = self.db.create_item(self.test_project_id, "issue", "Issue 2")
-        
-        update_id = self.db.add_update(
-            self.test_project_id, 
+
+        self.db.add_update(
+            self.test_project_id,
             "Fixed both issues",
             item_ids=[item1, item2]
         )
-        
+
         update = self.db.get_latest_update(self.test_project_id)
         self.assertIn(item1, update['item_ids'])
         self.assertIn(item2, update['item_ids'])
-    
+
     def test_get_latest_update(self):
         """get_latest_update should return most recent."""
         self.db.ensure_project(self.test_project_path)
         self.db.add_update(self.test_project_id, "First update")
         self.db.add_update(self.test_project_id, "Second update")
-        
+
         latest = self.db.get_latest_update(self.test_project_id)
         self.assertEqual(latest['content'], "Second update")
-    
+
     def test_get_updates_ordered(self):
         """get_updates should return in reverse chronological order."""
         self.db.ensure_project(self.test_project_path)
         self.db.add_update(self.test_project_id, "First")
         self.db.add_update(self.test_project_id, "Second")
         self.db.add_update(self.test_project_id, "Third")
-        
+
         updates = self.db.get_updates(self.test_project_id)
         self.assertEqual(updates[0]['content'], "Third")
         self.assertEqual(updates[2]['content'], "First")
-    
+
     # --- Summary Tests ---
-    
+
     def test_project_summary(self):
         """project_summary should return counts by type and status."""
         self.db.ensure_project(self.test_project_path)
@@ -377,9 +415,9 @@ class TestKanbanDB(unittest.TestCase):
         self.db.create_item(self.test_project_id, "issue", "Issue 2")
         item3 = self.db.create_item(self.test_project_id, "todo", "Todo 1")
         self.db.advance_status(item3)  # backlog -> todo
-        
+
         summary = self.db.project_summary(self.test_project_id)
-        
+
         self.assertEqual(summary['issue']['backlog'], 2)
         self.assertEqual(summary['todo']['todo'], 1)
 
@@ -396,31 +434,39 @@ class TestKanbanMCPServerState(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-kanban-mcp"
         cleanup_test_project(self.server.db, self.test_project_path)
-    
+
     def tearDown(self):
         cleanup_test_project(self.server.db, self.test_project_path)
-    
+
     def test_no_project_set_initially(self):
         """Server should have no current project initially."""
         self.assertIsNone(self.server.current_project_id)
-    
+
     def test_set_current_project(self):
         """set_current_project should store project in server state."""
-        result = self.server.tools['set_current_project']['function'](self.test_project_path)
+        result = self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
         self.assertTrue(result['success'])
         self.assertIsNotNone(self.server.current_project_id)
-    
+
     def test_get_current_project(self):
         """get_current_project should return current project info."""
-        self.server.tools['set_current_project']['function'](self.test_project_path)
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
         result = self.server.tools['get_current_project']['function']()
         self.assertTrue(result['success'])
-        self.assertEqual(result['directory_path'], self.test_project_path)
-    
+        self.assertEqual(
+            result['directory_path'],
+            self.test_project_path)
+
     def test_tools_use_current_project_when_not_specified(self):
-        """Tools should use current project when project_dir not specified."""
-        self.server.tools['set_current_project']['function'](self.test_project_path)
-        
+        """Tools should use current project."""
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
+
         # Create item without specifying project_dir
         result = self.server.tools['new_item']['function'](
             item_type="issue",
@@ -441,49 +487,58 @@ class TestJSONRPCProtocol(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-jsonrpc"
         cleanup_test_project(self.server.db, self.test_project_path)
-    
+
     def tearDown(self):
         cleanup_test_project(self.server.db, self.test_project_path)
-    
+
     def test_initialize_response(self):
         """Initialize should return proper protocol info."""
         import asyncio
-        request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        request = {
+            "jsonrpc": "2.0", "id": 1,
+            "method": "initialize", "params": {}}
         response = asyncio.run(self.server.handle_request(request))
-        
+
         self.assertEqual(response['jsonrpc'], '2.0')
         self.assertEqual(response['id'], 1)
         self.assertIn('result', response)
         self.assertIn('protocolVersion', response['result'])
         self.assertIn('capabilities', response['result'])
         self.assertIn('serverInfo', response['result'])
-    
+
     def test_tools_list_response(self):
         """tools/list should return all registered tools."""
         import asyncio
-        request = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+        request = {
+            "jsonrpc": "2.0", "id": 2,
+            "method": "tools/list", "params": {}}
         response = asyncio.run(self.server.handle_request(request))
-        
+
         self.assertEqual(response['id'], 2)
         self.assertIn('result', response)
         self.assertIn('tools', response['result'])
-        
+
         tool_names = [t['name'] for t in response['result']['tools']]
         self.assertIn('new_item', tool_names)
         self.assertIn('list_items', tool_names)
         self.assertIn('set_current_project', tool_names)
-    
+
     def test_tools_call_success(self):
         """tools/call should execute tool and return result."""
         import asyncio
-        
+
         # First set project
         set_req = {
             "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "set_current_project", "arguments": {"project_dir": self.test_project_path}}
+            "params": {
+                "name": "set_current_project",
+                "arguments": {
+                    "project_dir": self.test_project_path
+                }
+            }
         }
         asyncio.run(self.server.handle_request(set_req))
-        
+
         # Then create item
         request = {
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -493,11 +548,11 @@ class TestJSONRPCProtocol(unittest.TestCase):
             }
         }
         response = asyncio.run(self.server.handle_request(request))
-        
+
         self.assertEqual(response['id'], 3)
         self.assertIn('result', response)
         self.assertIn('content', response['result'])
-    
+
     def test_tools_call_unknown_tool(self):
         """tools/call with unknown tool should return error."""
         import asyncio
@@ -506,16 +561,18 @@ class TestJSONRPCProtocol(unittest.TestCase):
             "params": {"name": "nonexistent_tool", "arguments": {}}
         }
         response = asyncio.run(self.server.handle_request(request))
-        
+
         self.assertIn('error', response)
         self.assertEqual(response['error']['code'], -32602)
-    
+
     def test_unknown_method(self):
         """Unknown method should return error."""
         import asyncio
-        request = {"jsonrpc": "2.0", "id": 5, "method": "unknown/method", "params": {}}
+        request = {
+            "jsonrpc": "2.0", "id": 5,
+            "method": "unknown/method", "params": {}}
         response = asyncio.run(self.server.handle_request(request))
-        
+
         self.assertIn('error', response)
         self.assertEqual(response['error']['code'], -32601)
 
@@ -533,26 +590,31 @@ class TestGetTodos(unittest.TestCase):
         self.test_project_path = "/tmp/test-get-todos"
         cleanup_test_project(self.server.db, self.test_project_path)
         # Set current project
-        self.server.tools['set_current_project']['function'](self.test_project_path)
-    
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
+
     def tearDown(self):
-        cleanup_test_project(self.server.db, self.test_project_path)
-    
+        cleanup_test_project(
+            self.server.db, self.test_project_path)
+
     def test_get_todos_returns_backlog_items(self):
-        """get_todos should return items in backlog status."""
-        # Create items
-        self.server.tools['new_item']['function'](item_type="issue", title="Backlog Issue")
-        result = self.server.tools['new_item']['function'](item_type="todo", title="In Progress Todo")
-        # Move one to in_progress
+        """get_todos should return backlog items."""
+        new = self.server.tools['new_item']['function']
+        new(item_type="issue", title="Backlog Issue")
+        result = new(
+            item_type="todo", title="In Progress Todo")
         item_id = result['item']['id']
-        self.server.tools['advance_status']['function'](item_id)  # backlog -> todo
-        self.server.tools['advance_status']['function'](item_id)  # todo -> in_progress
-        
+        adv = self.server.tools[
+            'advance_status']['function']
+        adv(item_id)
+        adv(item_id)
+
         todos = self.server.tools['get_todos']['function']()
         self.assertTrue(todos['success'])
         self.assertEqual(todos['count'], 1)
         self.assertEqual(todos['items'][0]['title'], "Backlog Issue")
-    
+
     def test_get_todos_empty_when_no_backlog(self):
         """get_todos should return empty when no backlog items."""
         todos = self.server.tools['get_todos']['function']()
@@ -578,24 +640,26 @@ class TestConnectionPooling(unittest.TestCase):
 
     def tearDown(self):
         cleanup_test_project(self.db, self.test_project_path)
-    
+
     def test_db_has_pool(self):
         """KanbanDB should have a connection pool."""
         self.assertTrue(hasattr(self.db, '_pool'))
         self.assertIsNotNone(self.db._pool)
-    
+
     def test_get_connection_returns_pooled_connection(self):
         """_get_connection should return connection from pool."""
         conn = self.db._get_connection()
         self.assertIsNotNone(conn)
         # Pooled connections have pool_config attribute
-        self.assertTrue(hasattr(conn, '_pool_config_version') or conn.is_connected())
+        self.assertTrue(
+            hasattr(conn, '_pool_config_version')
+            or conn.is_connected())
         conn.close()
-    
+
     def test_multiple_operations_reuse_connections(self):
         """Multiple operations should reuse pooled connections."""
         self.db.ensure_project(self.test_project_path)
-        
+
         # Perform multiple operations - should not exhaust a small pool
         for i in range(10):
             self.db.create_item(
@@ -603,29 +667,32 @@ class TestConnectionPooling(unittest.TestCase):
                 type_name="issue",
                 title=f"Issue {i}"
             )
-        
+
         # If we got here without error, pool is working
-        items = self.db.list_items(project_id=self.db.hash_project_path(self.test_project_path))
+        items = self.db.list_items(
+            project_id=self.db.hash_project_path(
+                self.test_project_path))
         self.assertEqual(len(items), 10)
-    
+
     def test_pool_size_configurable(self):
         """Pool size should be configurable at init."""
         from kanban_mcp.core import KanbanDB
         db = KanbanDB(pool_size=3)
         self.assertEqual(db._pool.pool_size, 3)
         # Pool auto-manages connections, no explicit close needed
-    
+
     def test_concurrent_connections_within_pool_limit(self):
         """Should handle concurrent operations within pool limit."""
         self.db.ensure_project(self.test_project_path)
         project_id = self.db.hash_project_path(self.test_project_path)
-        
+
         # Create several items rapidly
         item_ids = []
         for i in range(5):
-            item_id = self.db.create_item(project_id, "issue", f"Concurrent {i}")
+            item_id = self.db.create_item(
+                project_id, "issue", f"Concurrent {i}")
             item_ids.append(item_id)
-        
+
         # Verify all were created
         for item_id in item_ids:
             item = self.db.get_item(item_id)
@@ -634,7 +701,7 @@ class TestConnectionPooling(unittest.TestCase):
 
 class TestRelationships(unittest.TestCase):
     """Tests for item relationships."""
-    
+
     @classmethod
     def setUpClass(cls):
         from kanban_mcp.core import KanbanDB
@@ -643,119 +710,175 @@ class TestRelationships(unittest.TestCase):
         # Create project
         conn = cls.db._get_connection()
         cursor = conn.cursor()
-        cursor.execute('''INSERT INTO projects (id, name, directory_path) VALUES (%s, %s, %s)
-                          ON DUPLICATE KEY UPDATE name = VALUES(name)''', 
-                       (cls.project_id, 'test_relationships', '/tmp/test_relationships'))
+        cursor.execute(
+            "INSERT INTO projects "
+            "(id, name, directory_path) "
+            "VALUES (%s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE "
+            "name = VALUES(name)",
+            (cls.project_id,
+             'test_relationships',
+             '/tmp/test_relationships'))
         conn.commit()
         cursor.close()
         conn.close()
-    
+
     @classmethod
     def tearDownClass(cls):
         # Clean up relationships
         conn = cls.db._get_connection()
         cursor = conn.cursor()
-        cursor.execute("DELETE FROM item_relationships WHERE source_item_id IN (SELECT id FROM items WHERE project_id = %s)", (cls.project_id,))
-        cursor.execute("DELETE FROM update_items WHERE item_id IN (SELECT id FROM items WHERE project_id = %s)", (cls.project_id,))
-        cursor.execute("DELETE FROM updates WHERE project_id = %s", (cls.project_id,))
-        cursor.execute("DELETE FROM items WHERE project_id = %s", (cls.project_id,))
+        sub = (
+            "(SELECT id FROM items "
+            "WHERE project_id = %s)")
+        cursor.execute(
+            "DELETE FROM item_relationships "
+            "WHERE source_item_id IN " + sub,
+            (cls.project_id,))
+        cursor.execute(
+            "DELETE FROM update_items "
+            "WHERE item_id IN " + sub,
+            (cls.project_id,))
+        cursor.execute(
+            "DELETE FROM updates "
+            "WHERE project_id = %s",
+            (cls.project_id,))
+        cursor.execute(
+            "DELETE FROM items "
+            "WHERE project_id = %s",
+            (cls.project_id,))
         cursor.execute("DELETE FROM projects WHERE id = %s", (cls.project_id,))
         conn.commit()
         cursor.close()
         conn.close()
-    
+
     def setUp(self):
         # Create fresh test items for each test
-        self.blocker_id = self.db.create_item(self.project_id, "issue", "Blocker", "desc", 2)
-        self.blocked_id = self.db.create_item(self.project_id, "feature", "Blocked", "desc", 2)
-        self.other_id = self.db.create_item(self.project_id, "todo", "Other", "desc", 3)
-    
+        self.blocker_id = self.db.create_item(
+            self.project_id, "issue", "Blocker",
+            "desc", 2)
+        self.blocked_id = self.db.create_item(
+            self.project_id, "feature", "Blocked",
+            "desc", 2)
+        self.other_id = self.db.create_item(
+            self.project_id, "todo", "Other",
+            "desc", 3)
+
     def tearDown(self):
         # Clean up items and relationships
         conn = self.db._get_connection()
         cursor = conn.cursor()
         ids = (self.blocker_id, self.blocked_id, self.other_id)
-        cursor.execute("DELETE FROM item_relationships WHERE source_item_id IN (%s, %s, %s) OR target_item_id IN (%s, %s, %s)", ids + ids)
+        cursor.execute(
+            "DELETE FROM item_relationships "
+            "WHERE source_item_id IN (%s, %s, %s) "
+            "OR target_item_id IN (%s, %s, %s)",
+            ids + ids)
         conn.commit()
         cursor.close()
         conn.close()
         self.db.delete_item(self.blocker_id)
         self.db.delete_item(self.blocked_id)
         self.db.delete_item(self.other_id)
-    
+
     def test_add_relationship_blocks(self):
-        result = self.db.add_relationship(self.blocker_id, self.blocked_id, "blocks")
+        result = self.db.add_relationship(
+            self.blocker_id, self.blocked_id, "blocks")
         self.assertTrue(result["success"])
         self.assertEqual(result["type"], "blocks")
-    
+
     def test_add_relationship_depends_on(self):
-        result = self.db.add_relationship(self.blocked_id, self.blocker_id, "depends_on")
+        result = self.db.add_relationship(
+            self.blocked_id, self.blocker_id,
+            "depends_on")
         self.assertTrue(result["success"])
         self.assertEqual(result["type"], "depends_on")
-    
+
     def test_add_relationship_relates_to(self):
-        result = self.db.add_relationship(self.blocker_id, self.other_id, "relates_to")
+        result = self.db.add_relationship(
+            self.blocker_id, self.other_id,
+            "relates_to")
         self.assertTrue(result["success"])
-    
+
     def test_add_relationship_invalid_type(self):
         with self.assertRaises(ValueError):
-            self.db.add_relationship(self.blocker_id, self.blocked_id, "invalid")
-    
+            self.db.add_relationship(
+                self.blocker_id, self.blocked_id,
+                "invalid")
+
     def test_add_relationship_same_item(self):
         with self.assertRaises(ValueError):
-            self.db.add_relationship(self.blocker_id, self.blocker_id, "blocks")
-    
+            self.db.add_relationship(
+                self.blocker_id, self.blocker_id,
+                "blocks")
+
     def test_add_relationship_duplicate(self):
-        self.db.add_relationship(self.blocker_id, self.blocked_id, "blocks")
-        result = self.db.add_relationship(self.blocker_id, self.blocked_id, "blocks")
+        self.db.add_relationship(
+            self.blocker_id, self.blocked_id, "blocks")
+        result = self.db.add_relationship(
+            self.blocker_id, self.blocked_id, "blocks")
         self.assertFalse(result["success"])
         self.assertIn("already exists", result["error"])
-    
+
     def test_get_item_relationships(self):
-        self.db.add_relationship(self.blocker_id, self.blocked_id, "blocks")
-        rels = self.db.get_item_relationships(self.blocked_id)
+        self.db.add_relationship(
+            self.blocker_id, self.blocked_id, "blocks")
+        rels = self.db.get_item_relationships(
+            self.blocked_id)
         self.assertEqual(len(rels["incoming"]), 1)
-        self.assertEqual(rels["incoming"][0]["related_item_id"], self.blocker_id)
-        self.assertEqual(rels["incoming"][0]["relationship_type"], "blocks")
-    
+        self.assertEqual(
+            rels["incoming"][0]["related_item_id"],
+            self.blocker_id)
+        self.assertEqual(
+            rels["incoming"][0]["relationship_type"],
+            "blocks")
+
     def test_remove_relationship(self):
-        self.db.add_relationship(self.blocker_id, self.blocked_id, "blocks")
-        result = self.db.remove_relationship(self.blocker_id, self.blocked_id, "blocks")
+        self.db.add_relationship(
+            self.blocker_id, self.blocked_id, "blocks")
+        result = self.db.remove_relationship(
+            self.blocker_id, self.blocked_id, "blocks")
         self.assertTrue(result["success"])
         rels = self.db.get_item_relationships(self.blocked_id)
         self.assertEqual(len(rels["incoming"]), 0)
-    
+
     def test_get_blocking_items(self):
-        self.db.add_relationship(self.blocker_id, self.blocked_id, "blocks")
+        self.db.add_relationship(
+            self.blocker_id, self.blocked_id, "blocks")
         blockers = self.db.get_blocking_items(self.blocked_id)
         self.assertEqual(len(blockers), 1)
         self.assertEqual(blockers[0]["id"], self.blocker_id)
         self.assertEqual(blockers[0]["reason"], "blocks")
-    
+
     def test_get_blocking_items_depends_on(self):
-        self.db.add_relationship(self.blocked_id, self.blocker_id, "depends_on")
+        self.db.add_relationship(
+            self.blocked_id, self.blocker_id,
+            "depends_on")
         blockers = self.db.get_blocking_items(self.blocked_id)
         self.assertEqual(len(blockers), 1)
         self.assertEqual(blockers[0]["id"], self.blocker_id)
         self.assertEqual(blockers[0]["reason"], "dependency")
-    
+
     def test_close_blocked_item_fails(self):
-        self.db.add_relationship(self.blocker_id, self.blocked_id, "blocks")
+        self.db.add_relationship(
+            self.blocker_id, self.blocked_id, "blocks")
         result = self.db.close_item(self.blocked_id)
         self.assertFalse(result["success"])
         self.assertIn("blocked by", result["message"])
-    
+
     def test_close_unblocked_item_succeeds(self):
-        self.db.add_relationship(self.blocker_id, self.blocked_id, "blocks")
+        self.db.add_relationship(
+            self.blocker_id, self.blocked_id, "blocks")
         self.db.close_item(self.blocker_id)  # Close the blocker first
         result = self.db.close_item(self.blocked_id)
         self.assertTrue(result["success"])
-    
+
     def test_blocking_cleared_when_blocker_done(self):
-        self.db.add_relationship(self.blocker_id, self.blocked_id, "blocks")
+        self.db.add_relationship(
+            self.blocker_id, self.blocked_id, "blocks")
         blockers = self.db.get_blocking_items(self.blocked_id)
         self.assertEqual(len(blockers), 1)
-        
+
         self.db.set_status(self.blocker_id, "done")
         blockers = self.db.get_blocking_items(self.blocked_id)
         self.assertEqual(len(blockers), 0)
@@ -772,7 +895,6 @@ class TestUpdateItem(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
         # Create a test item
@@ -794,16 +916,19 @@ class TestUpdateItem(unittest.TestCase):
 
         item = self.db.get_item(self.item_id)
         self.assertEqual(item['title'], "New Title")
-        self.assertEqual(item['description'], "Original description")  # Unchanged
+        self.assertEqual(
+            item['description'], "Original description")
 
     def test_update_item_description(self):
         """update_item should update description."""
-        result = self.db.update_item(self.item_id, description="New description")
+        result = self.db.update_item(
+            self.item_id, description="New description")
         self.assertTrue(result['success'])
 
         item = self.db.get_item(self.item_id)
-        self.assertEqual(item['title'], "Original Title")  # Unchanged
-        self.assertEqual(item['description'], "New description")
+        self.assertEqual(item['title'], "Original Title")
+        self.assertEqual(
+            item['description'], "New description")
 
     def test_update_item_priority(self):
         """update_item should update priority."""
@@ -825,7 +950,8 @@ class TestUpdateItem(unittest.TestCase):
 
         item = self.db.get_item(self.item_id)
         self.assertEqual(item['title'], "Updated Title")
-        self.assertEqual(item['description'], "Updated description")
+        self.assertEqual(
+            item['description'], "Updated description")
         self.assertEqual(item['priority'], 2)
 
     def test_update_item_returns_updated_item(self):
@@ -868,9 +994,11 @@ class TestEditItemTool(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-edit-item-tool"
         cleanup_test_project(self.server.db, self.test_project_path)
-        self.server.tools['set_current_project']['function'](self.test_project_path)
-        # Create a test item
-        result = self.server.tools['new_item']['function'](
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
+        result = self.server.tools[
+            'new_item']['function'](
             item_type="issue",
             title="Original Title",
             description="Original description",
@@ -879,7 +1007,8 @@ class TestEditItemTool(unittest.TestCase):
         self.item_id = result['item']['id']
 
     def tearDown(self):
-        cleanup_test_project(self.server.db, self.test_project_path)
+        cleanup_test_project(
+            self.server.db, self.test_project_path)
 
     def test_edit_item_tool_exists(self):
         """edit_item tool should be registered."""
@@ -904,7 +1033,9 @@ class TestEditItemTool(unittest.TestCase):
         )
         self.assertTrue(result['success'])
         self.assertEqual(result['item']['title'], "New Title")
-        self.assertEqual(result['item']['description'], "New description")
+        self.assertEqual(
+            result['item']['description'],
+            "New description")
         self.assertEqual(result['item']['priority'], 1)
 
 
@@ -919,7 +1050,6 @@ class TestStatusHistory(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -1029,7 +1159,9 @@ class TestStatusHistory(unittest.TestCase):
         self.assertEqual(history[3]['new_status'], 'review')
         # Verify timestamps are ascending
         for i in range(len(history) - 1):
-            self.assertLessEqual(history[i]['changed_at'], history[i+1]['changed_at'])
+            self.assertLessEqual(
+                history[i]['changed_at'],
+                history[i+1]['changed_at'])
 
     def test_empty_history_for_nonexistent_item(self):
         """get_status_history should return [] for invalid item_id."""
@@ -1074,26 +1206,33 @@ class TestStatusHistoryMCPTool(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-status-history-tool"
         cleanup_test_project(self.server.db, self.test_project_path)
-        self.server.tools['set_current_project']['function'](self.test_project_path)
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
 
     def tearDown(self):
-        cleanup_test_project(self.server.db, self.test_project_path)
+        cleanup_test_project(
+            self.server.db, self.test_project_path)
 
     def test_get_status_history_tool_exists(self):
         """get_status_history tool should be registered."""
-        self.assertIn('get_status_history', self.server.tools)
+        self.assertIn(
+            'get_status_history', self.server.tools)
 
     def test_get_status_history_tool_returns_history(self):
-        """get_status_history tool should return item history."""
-        result = self.server.tools['new_item']['function'](
+        """get_status_history tool should return history."""
+        result = self.server.tools[
+            'new_item']['function'](
             item_type="issue",
             title="Test Issue"
         )
         item_id = result['item']['id']
 
-        self.server.tools['advance_status']['function'](item_id)
+        self.server.tools[
+            'advance_status']['function'](item_id)
 
-        history_result = self.server.tools['get_status_history']['function'](item_id)
+        history_result = self.server.tools[
+            'get_status_history']['function'](item_id)
         self.assertTrue(history_result['success'])
         self.assertEqual(len(history_result['history']), 2)
 
@@ -1109,7 +1248,6 @@ class TestComplexity(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -1194,7 +1332,6 @@ class TestItemMetrics(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -1273,10 +1410,13 @@ class TestComplexityMCPTools(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-complexity-tools"
         cleanup_test_project(self.server.db, self.test_project_path)
-        self.server.tools['set_current_project']['function'](self.test_project_path)
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
 
     def tearDown(self):
-        cleanup_test_project(self.server.db, self.test_project_path)
+        cleanup_test_project(
+            self.server.db, self.test_project_path)
 
     def test_new_item_with_complexity(self):
         """new_item tool should accept complexity parameter."""
@@ -1315,10 +1455,13 @@ class TestComplexityMCPTools(unittest.TestCase):
         )
         item_id = result['item']['id']
 
-        metrics_result = self.server.tools['get_item_metrics']['function'](item_id)
+        metrics_result = self.server.tools[
+            'get_item_metrics']['function'](item_id)
         self.assertTrue(metrics_result['success'])
         self.assertIn('metrics', metrics_result)
-        self.assertEqual(metrics_result['metrics']['item_id'], item_id)
+        self.assertEqual(
+            metrics_result['metrics']['item_id'],
+            item_id)
 
 
 class TestTags(unittest.TestCase):
@@ -1332,7 +1475,6 @@ class TestTags(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -1503,7 +1645,6 @@ class TestItemTags(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
         # Create test item
@@ -1675,7 +1816,6 @@ class TestListItemsWithTags(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -1731,7 +1871,7 @@ class TestListItemsWithTags(unittest.TestCase):
         self.assertIn("Full Stack Issue", titles)
 
     def test_list_items_multiple_tags_or(self):
-        """list_items with multiple tags (OR) should return items with any tag."""
+        """list_items with multiple tags (OR) returns any."""
         items = self.db.list_items(
             project_id=self.test_project_id,
             tag_names=["ui", "api"],
@@ -1743,7 +1883,7 @@ class TestListItemsWithTags(unittest.TestCase):
         self.assertIn("Backend Feature", titles)
 
     def test_list_items_multiple_tags_and(self):
-        """list_items with multiple tags (AND) should return items with all tags."""
+        """list_items with multiple tags (AND) returns all."""
         items = self.db.list_items(
             project_id=self.test_project_id,
             tag_names=["frontend", "backend"],
@@ -1817,16 +1957,19 @@ class TestTagMCPTools(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-tag-tools"
         cleanup_test_project(self.server.db, self.test_project_path)
-        self.server.tools['set_current_project']['function'](self.test_project_path)
-        # Create test item
-        result = self.server.tools['new_item']['function'](
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
+        result = self.server.tools[
+            'new_item']['function'](
             item_type="feature",
             title="Test Feature"
         )
         self.item_id = result['item']['id']
 
     def tearDown(self):
-        cleanup_test_project(self.server.db, self.test_project_path)
+        cleanup_test_project(
+            self.server.db, self.test_project_path)
 
     # --- Tool Registration Tests ---
 
@@ -1871,32 +2014,49 @@ class TestTagMCPTools(unittest.TestCase):
 
     def test_add_tag_adds_to_item(self):
         """add_tag should add tag to item."""
-        result = self.server.tools['add_tag']['function'](self.item_id, "newtag")
+        result = self.server.tools[
+            'add_tag']['function'](
+            self.item_id, "newtag")
         self.assertTrue(result['success'])
 
-        tags_result = self.server.tools['get_item_tags']['function'](self.item_id)
+        tags_result = self.server.tools[
+            'get_item_tags']['function'](self.item_id)
         self.assertEqual(len(tags_result['tags']), 1)
-        self.assertEqual(tags_result['tags'][0]['name'], "newtag")
+        self.assertEqual(
+            tags_result['tags'][0]['name'], "newtag")
 
     def test_remove_tag_removes_from_item(self):
         """remove_tag should remove tag from item."""
-        self.server.tools['add_tag']['function'](self.item_id, "removethis")
-        tags = self.server.tools['get_item_tags']['function'](self.item_id)['tags']
+        self.server.tools[
+            'add_tag']['function'](
+            self.item_id, "removethis")
+        tags = self.server.tools[
+            'get_item_tags']['function'](
+            self.item_id)['tags']
         tag_id = tags[0]['id']
 
-        result = self.server.tools['remove_tag']['function'](self.item_id, tag_id)
+        result = self.server.tools[
+            'remove_tag']['function'](
+            self.item_id, tag_id)
         self.assertTrue(result['success'])
 
-        tags_after = self.server.tools['get_item_tags']['function'](self.item_id)
+        tags_after = self.server.tools[
+            'get_item_tags']['function'](self.item_id)
         self.assertEqual(len(tags_after['tags']), 0)
 
     def test_update_tag_changes_color(self):
         """update_tag should change tag color."""
-        self.server.tools['add_tag']['function'](self.item_id, "colorchange")
-        tags = self.server.tools['get_item_tags']['function'](self.item_id)['tags']
+        self.server.tools[
+            'add_tag']['function'](
+            self.item_id, "colorchange")
+        tags = self.server.tools[
+            'get_item_tags']['function'](
+            self.item_id)['tags']
         tag_id = tags[0]['id']
 
-        result = self.server.tools['update_tag']['function'](tag_id, color="#123456")
+        result = self.server.tools[
+            'update_tag']['function'](
+            tag_id, color="#123456")
         self.assertTrue(result['success'])
         self.assertEqual(result['tag']['color'], "#123456")
 
@@ -1960,7 +2120,6 @@ class TestEpicSupport(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -1981,7 +2140,7 @@ class TestEpicSupport(unittest.TestCase):
         self.assertEqual(item['status_name'], 'backlog')
 
     def test_epic_workflow_matches_issue(self):
-        """Epic should have same workflow as issue: backlog->todo->in_progress->review->done->closed."""
+        """Epic should have same workflow as issue."""
         item_id = self.db.create_item(
             project_id=self.test_project_id,
             type_name="epic",
@@ -2297,7 +2456,7 @@ class TestEpicSupport(unittest.TestCase):
             type_name="epic",
             title="Incomplete Epic"
         )
-        child_id = self.db.create_item(
+        self.db.create_item(
             project_id=self.test_project_id,
             type_name="issue",
             title="Incomplete Child",
@@ -2544,13 +2703,16 @@ class TestEpicMCPTools(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-epic-tools"
         cleanup_test_project(self.server.db, self.test_project_path)
-        self.server.tools['set_current_project']['function'](self.test_project_path)
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
 
     def tearDown(self):
-        cleanup_test_project(self.server.db, self.test_project_path)
+        cleanup_test_project(
+            self.server.db, self.test_project_path)
 
     def test_new_item_with_parent_id(self):
-        """new_item tool should accept parent_id parameter."""
+        """new_item tool should accept parent_id."""
         epic_result = self.server.tools['new_item']['function'](
             item_type="epic",
             title="Test Epic"
@@ -2563,7 +2725,8 @@ class TestEpicMCPTools(unittest.TestCase):
             parent_id=epic_id
         )
         self.assertTrue(child_result['success'])
-        self.assertEqual(child_result['item']['parent_id'], epic_id)
+        self.assertEqual(
+            child_result['item']['parent_id'], epic_id)
 
     def test_get_epic_progress_tool(self):
         """get_epic_progress tool should return progress stats."""
@@ -2579,10 +2742,12 @@ class TestEpicMCPTools(unittest.TestCase):
             parent_id=epic_id
         )
 
-        progress_result = self.server.tools['get_epic_progress']['function'](epic_id)
+        progress_result = self.server.tools[
+            'get_epic_progress']['function'](epic_id)
         self.assertTrue(progress_result['success'])
         self.assertEqual(progress_result['progress']['total'], 1)
-        self.assertEqual(progress_result['progress']['completed'], 0)
+        self.assertEqual(
+            progress_result['progress']['completed'], 0)
 
     def test_set_parent_tool(self):
         """set_parent tool should set item parent."""
@@ -2598,7 +2763,9 @@ class TestEpicMCPTools(unittest.TestCase):
         )
         orphan_id = orphan_result['item']['id']
 
-        result = self.server.tools['set_parent']['function'](orphan_id, epic_id)
+        result = self.server.tools[
+            'set_parent']['function'](
+            orphan_id, epic_id)
         self.assertTrue(result['success'])
 
     def test_list_children_tool(self):
@@ -2620,12 +2787,13 @@ class TestEpicMCPTools(unittest.TestCase):
             parent_id=epic_id
         )
 
-        result = self.server.tools['list_children']['function'](epic_id)
+        result = self.server.tools[
+            'list_children']['function'](epic_id)
         self.assertTrue(result['success'])
         self.assertEqual(result['count'], 2)
 
     def test_list_children_recursive(self):
-        """list_children with recursive=True should return all descendants."""
+        """list_children recursive returns all descendants."""
         epic_result = self.server.tools['new_item']['function'](
             item_type="epic",
             title="Root Epic"
@@ -2645,7 +2813,9 @@ class TestEpicMCPTools(unittest.TestCase):
             parent_id=sub_epic_id
         )
 
-        result = self.server.tools['list_children']['function'](epic_id, recursive=True)
+        result = self.server.tools[
+            'list_children']['function'](
+            epic_id, recursive=True)
         self.assertTrue(result['success'])
         self.assertEqual(result['count'], 2)
 
@@ -2676,7 +2846,6 @@ class TestSearch(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -2698,7 +2867,9 @@ class TestSearch(unittest.TestCase):
 
         results = self.db.search(self.test_project_id, "authentication")
         self.assertGreater(len(results['items']), 0)
-        self.assertTrue(any('authentication' in r['title'].lower() for r in results['items']))
+        self.assertTrue(any(
+            'authentication' in r['title'].lower()
+            for r in results['items']))
 
     def test_search_finds_item_by_description(self):
         """search should find items matching description."""
@@ -2706,7 +2877,9 @@ class TestSearch(unittest.TestCase):
             project_id=self.test_project_id,
             type_name="issue",
             title="Bug fix",
-            description="The authentication system fails when using OAuth tokens"
+            description=(
+                "The authentication system fails "
+                "when using OAuth tokens")
         )
 
         results = self.db.search(self.test_project_id, "OAuth")
@@ -2714,7 +2887,10 @@ class TestSearch(unittest.TestCase):
 
     def test_search_finds_updates(self):
         """search should find updates matching content."""
-        self.db.add_update(self.test_project_id, "Implemented the authentication middleware today")
+        self.db.add_update(
+            self.test_project_id,
+            "Implemented the authentication "
+            "middleware today")
 
         results = self.db.search(self.test_project_id, "middleware")
         self.assertGreater(len(results['updates']), 0)
@@ -2804,10 +2980,13 @@ class TestSearchMCPTool(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-search-tool"
         cleanup_test_project(self.server.db, self.test_project_path)
-        self.server.tools['set_current_project']['function'](self.test_project_path)
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
 
     def tearDown(self):
-        cleanup_test_project(self.server.db, self.test_project_path)
+        cleanup_test_project(
+            self.server.db, self.test_project_path)
 
     def test_search_tool_exists(self):
         """search tool should be registered."""
@@ -2834,7 +3013,9 @@ class TestSearchMCPTool(unittest.TestCase):
                 title=f"Findable item {i}"
             )
 
-        result = self.server.tools['search']['function'](query="findable", limit=2)
+        result = self.server.tools[
+            'search']['function'](
+            query="findable", limit=2)
         self.assertTrue(result['success'])
         self.assertLessEqual(len(result['items']), 2)
 
@@ -2850,7 +3031,6 @@ class TestFileLinks(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
         # Create test item
@@ -2879,7 +3059,9 @@ class TestFileLinks(unittest.TestCase):
 
     def test_link_file_with_lines(self):
         """link_file should link file with line range."""
-        result = self.db.link_file(self.item_id, "src/utils.py", line_start=10, line_end=25)
+        result = self.db.link_file(
+            self.item_id, "src/utils.py",
+            line_start=10, line_end=25)
         self.assertTrue(result['success'])
 
         files = self.db.get_item_files(self.item_id)
@@ -2889,8 +3071,10 @@ class TestFileLinks(unittest.TestCase):
         self.assertEqual(files[0]['line_end'], 25)
 
     def test_link_file_with_start_line_only(self):
-        """link_file should accept start line without end line."""
-        result = self.db.link_file(self.item_id, "src/app.py", line_start=42)
+        """link_file should accept start line only."""
+        result = self.db.link_file(
+            self.item_id, "src/app.py",
+            line_start=42)
         self.assertTrue(result['success'])
 
         files = self.db.get_item_files(self.item_id)
@@ -2906,8 +3090,12 @@ class TestFileLinks(unittest.TestCase):
 
     def test_link_file_same_path_different_lines(self):
         """Same file with different line ranges should succeed."""
-        self.db.link_file(self.item_id, "src/main.py", line_start=1, line_end=10)
-        result = self.db.link_file(self.item_id, "src/main.py", line_start=20, line_end=30)
+        self.db.link_file(
+            self.item_id, "src/main.py",
+            line_start=1, line_end=10)
+        result = self.db.link_file(
+            self.item_id, "src/main.py",
+            line_start=20, line_end=30)
         self.assertTrue(result['success'])
 
         files = self.db.get_item_files(self.item_id)
@@ -2931,10 +3119,16 @@ class TestFileLinks(unittest.TestCase):
 
     def test_unlink_file_with_lines(self):
         """unlink_file should remove specific line range link."""
-        self.db.link_file(self.item_id, "src/main.py", line_start=10, line_end=20)
-        self.db.link_file(self.item_id, "src/main.py", line_start=30, line_end=40)
+        self.db.link_file(
+            self.item_id, "src/main.py",
+            line_start=10, line_end=20)
+        self.db.link_file(
+            self.item_id, "src/main.py",
+            line_start=30, line_end=40)
 
-        result = self.db.unlink_file(self.item_id, "src/main.py", line_start=10, line_end=20)
+        result = self.db.unlink_file(
+            self.item_id, "src/main.py",
+            line_start=10, line_end=20)
         self.assertTrue(result['success'])
 
         files = self.db.get_item_files(self.item_id)
@@ -2956,8 +3150,12 @@ class TestFileLinks(unittest.TestCase):
     def test_get_item_files_multiple(self):
         """get_item_files should return all linked files."""
         self.db.link_file(self.item_id, "src/main.py")
-        self.db.link_file(self.item_id, "src/utils.py", line_start=10)
-        self.db.link_file(self.item_id, "tests/test_main.py", line_start=5, line_end=15)
+        self.db.link_file(
+            self.item_id, "src/utils.py",
+            line_start=10)
+        self.db.link_file(
+            self.item_id, "tests/test_main.py",
+            line_start=5, line_end=15)
 
         files = self.db.get_item_files(self.item_id)
         self.assertEqual(len(files), 3)
@@ -2986,7 +3184,7 @@ class TestFileLinks(unittest.TestCase):
         # Delete the item
         self.db.delete_item(self.item_id)
 
-        # File links should be gone (verify via direct query since item is gone)
+        # File links should be gone (verify via query)
         conn = self.db._get_connection()
         cursor = conn.cursor()
         try:
@@ -3013,16 +3211,19 @@ class TestFileLinksMCPTools(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-file-links-tools"
         cleanup_test_project(self.server.db, self.test_project_path)
-        self.server.tools['set_current_project']['function'](self.test_project_path)
-        # Create test item
-        result = self.server.tools['new_item']['function'](
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
+        result = self.server.tools[
+            'new_item']['function'](
             item_type="feature",
             title="Test Feature"
         )
         self.item_id = result['item']['id']
 
     def tearDown(self):
-        cleanup_test_project(self.server.db, self.test_project_path)
+        cleanup_test_project(
+            self.server.db, self.test_project_path)
 
     # --- Tool Registration Tests ---
 
@@ -3048,12 +3249,16 @@ class TestFileLinksMCPTools(unittest.TestCase):
         )
         self.assertTrue(result['success'])
 
-        files_result = self.server.tools['get_item_files']['function'](self.item_id)
+        files_result = self.server.tools[
+            'get_item_files']['function'](
+            self.item_id)
         self.assertEqual(len(files_result['files']), 1)
-        self.assertEqual(files_result['files'][0]['file_path'], "src/main.py")
+        self.assertEqual(
+            files_result['files'][0]['file_path'],
+            "src/main.py")
 
     def test_link_file_tool_with_lines(self):
-        """link_file tool should accept line_start and line_end."""
+        """link_file tool should accept line range."""
         result = self.server.tools['link_file']['function'](
             item_id=self.item_id,
             file_path="src/utils.py",
@@ -3062,9 +3267,14 @@ class TestFileLinksMCPTools(unittest.TestCase):
         )
         self.assertTrue(result['success'])
 
-        files_result = self.server.tools['get_item_files']['function'](self.item_id)
-        self.assertEqual(files_result['files'][0]['line_start'], 10)
-        self.assertEqual(files_result['files'][0]['line_end'], 25)
+        files_result = self.server.tools[
+            'get_item_files']['function'](
+            self.item_id)
+        self.assertEqual(
+            files_result['files'][0]['line_start'],
+            10)
+        self.assertEqual(
+            files_result['files'][0]['line_end'], 25)
 
     def test_unlink_file_tool(self):
         """unlink_file tool should remove file link."""
@@ -3079,7 +3289,9 @@ class TestFileLinksMCPTools(unittest.TestCase):
         )
         self.assertTrue(result['success'])
 
-        files_result = self.server.tools['get_item_files']['function'](self.item_id)
+        files_result = self.server.tools[
+            'get_item_files']['function'](
+            self.item_id)
         self.assertEqual(len(files_result['files']), 0)
 
     def test_get_item_files_tool(self):
@@ -3094,7 +3306,9 @@ class TestFileLinksMCPTools(unittest.TestCase):
             line_start=5
         )
 
-        result = self.server.tools['get_item_files']['function'](self.item_id)
+        result = self.server.tools[
+            'get_item_files']['function'](
+            self.item_id)
         self.assertTrue(result['success'])
         self.assertEqual(result['count'], 2)
         self.assertIn('files', result)
@@ -3111,7 +3325,6 @@ class TestQuestionType(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -3124,13 +3337,18 @@ class TestQuestionType(unittest.TestCase):
             project_id=self.test_project_id,
             type_name="question",
             title="Redis vs Memcached for caching?",
-            description="Decision: Using Redis. Rationale: Better data structures support."
+            description=(
+                "Decision: Using Redis. "
+                "Rationale: Better data "
+                "structures support.")
         )
         self.assertIsNotNone(item_id)
 
         item = self.db.get_item(item_id)
         self.assertEqual(item['type_name'], 'question')
-        self.assertEqual(item['title'], "Redis vs Memcached for caching?")
+        self.assertEqual(
+            item['title'],
+            "Redis vs Memcached for caching?")
         self.assertIn("Redis", item['description'])
 
     def test_question_default_status_is_backlog(self):
@@ -3144,7 +3362,7 @@ class TestQuestionType(unittest.TestCase):
         self.assertEqual(item['status_name'], 'backlog')
 
     def test_question_workflow_backlog_to_review(self):
-        """Question should advance from backlog (pending) to review (reviewed)."""
+        """Question should advance backlog to review."""
         item_id = self.db.create_item(
             project_id=self.test_project_id,
             type_name="question",
@@ -3255,7 +3473,9 @@ class TestQuestionType(unittest.TestCase):
             title="Regular Issue"
         )
 
-        items = self.db.list_items(project_id=self.test_project_id, type_name="question")
+        items = self.db.list_items(
+            project_id=self.test_project_id,
+            type_name="question")
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]['type_name'], 'question')
 
@@ -3272,17 +3492,22 @@ class TestQuestionTypeMCPTools(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-question-tools"
         cleanup_test_project(self.server.db, self.test_project_path)
-        self.server.tools['set_current_project']['function'](self.test_project_path)
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
 
     def tearDown(self):
-        cleanup_test_project(self.server.db, self.test_project_path)
+        cleanup_test_project(
+            self.server.db, self.test_project_path)
 
     def test_new_item_question_type(self):
         """new_item tool should accept 'question' type."""
         result = self.server.tools['new_item']['function'](
             item_type="question",
             title="Should we use Redis or Memcached?",
-            description="Decision: Using Redis. Rationale: Better data structures."
+            description=(
+                "Decision: Using Redis. "
+                "Rationale: Better data structures.")
         )
         self.assertTrue(result['success'])
         self.assertEqual(result['item']['type_name'], 'question')
@@ -3297,14 +3522,17 @@ class TestQuestionTypeMCPTools(unittest.TestCase):
         item_id = result['item']['id']
 
         # Advance to review
-        advance_result = self.server.tools['advance_status']['function'](item_id)
+        adv = self.server.tools[
+            'advance_status']['function']
+        advance_result = adv(item_id)
         self.assertTrue(advance_result['success'])
-        self.assertEqual(advance_result['new_status'], 'review')
+        self.assertEqual(
+            advance_result['new_status'], 'review')
 
-        # Advance to closed
-        advance_result = self.server.tools['advance_status']['function'](item_id)
+        advance_result = adv(item_id)
         self.assertTrue(advance_result['success'])
-        self.assertEqual(advance_result['new_status'], 'closed')
+        self.assertEqual(
+            advance_result['new_status'], 'closed')
 
     def test_question_list_filter(self):
         """list_items tool should filter by question type."""
@@ -3317,7 +3545,9 @@ class TestQuestionTypeMCPTools(unittest.TestCase):
             title="Issue 1"
         )
 
-        result = self.server.tools['list_items']['function'](item_type="question")
+        result = self.server.tools[
+            'list_items']['function'](
+            item_type="question")
         self.assertEqual(result['count'], 1)
         self.assertEqual(result['items'][0]['type_name'], 'question')
 
@@ -3333,10 +3563,11 @@ class TestDecisions(unittest.TestCase):
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
-        self.item_id = self.db.create_item(self.test_project_id, "issue", "Test Issue")
+        self.item_id = self.db.create_item(
+            self.test_project_id, "issue",
+            "Test Issue")
 
     def tearDown(self):
         cleanup_test_project(self.db, self.test_project_path)
@@ -3368,8 +3599,12 @@ class TestDecisions(unittest.TestCase):
         decisions = self.db.get_item_decisions(self.item_id)
         self.assertEqual(len(decisions), 1)
         self.assertEqual(decisions[0]['choice'], "React Context")
-        self.assertEqual(decisions[0]['rejected_alternatives'], "Redux (overkill), MobX (unfamiliar)")
-        self.assertEqual(decisions[0]['rationale'], "Team knows Context, app is small")
+        self.assertEqual(
+            decisions[0]['rejected_alternatives'],
+            "Redux (overkill), MobX (unfamiliar)")
+        self.assertEqual(
+            decisions[0]['rationale'],
+            "Team knows Context, app is small")
 
     def test_add_decision_nonexistent_item_fails(self):
         """add_decision should fail for non-existent item."""
@@ -3384,17 +3619,21 @@ class TestDecisions(unittest.TestCase):
         self.assertIn("200", str(ctx.exception))
 
     def test_rejected_max_length_enforced(self):
-        """add_decision should reject rejected_alternatives exceeding 500 chars."""
+        """add_decision should reject long rejected_alternatives."""
         long_rejected = "x" * 501
         with self.assertRaises(ValueError) as ctx:
-            self.db.add_decision(self.item_id, "Choice", rejected_alternatives=long_rejected)
+            self.db.add_decision(
+                self.item_id, "Choice",
+                rejected_alternatives=long_rejected)
         self.assertIn("500", str(ctx.exception))
 
     def test_rationale_max_length_enforced(self):
-        """add_decision should reject rationale exceeding 200 chars."""
+        """add_decision should reject long rationale."""
         long_rationale = "x" * 201
         with self.assertRaises(ValueError) as ctx:
-            self.db.add_decision(self.item_id, "Choice", rationale=long_rationale)
+            self.db.add_decision(
+                self.item_id, "Choice",
+                rationale=long_rationale)
         self.assertIn("200", str(ctx.exception))
 
     # --- Get Item Decisions Tests ---
@@ -3430,7 +3669,7 @@ class TestDecisions(unittest.TestCase):
         self.assertEqual(len(decisions), 0)
 
     def test_delete_decision_not_found(self):
-        """delete_decision should return success=False for non-existent decision."""
+        """delete_decision should fail for missing decision."""
         result = self.db.delete_decision(99999)
         self.assertFalse(result['success'])
         self.assertIn('error', result)
@@ -3447,7 +3686,10 @@ class TestDecisions(unittest.TestCase):
         conn = self.db._get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute("SELECT COUNT(*) FROM item_decisions WHERE item_id = %s", (self.item_id,))
+            cursor.execute(
+                "SELECT COUNT(*) FROM "
+                "item_decisions WHERE item_id = %s",
+                (self.item_id,))
             count = cursor.fetchone()[0]
             self.assertEqual(count, 0)
         finally:
@@ -3467,15 +3709,19 @@ class TestDecisionsMCPTools(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-decisions-mcp"
         cleanup_test_project(self.server.db, self.test_project_path)
-        self.server.tools['set_current_project']['function'](self.test_project_path)
-        item_result = self.server.tools['new_item']['function'](
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
+        item_result = self.server.tools[
+            'new_item']['function'](
             item_type="issue",
             title="Test Issue for Decisions"
         )
         self.item_id = item_result['item']['id']
 
     def tearDown(self):
-        cleanup_test_project(self.server.db, self.test_project_path)
+        cleanup_test_project(
+            self.server.db, self.test_project_path)
 
     # --- Tool Registration Tests ---
 
@@ -3503,9 +3749,14 @@ class TestDecisionsMCPTools(unittest.TestCase):
         )
         self.assertTrue(result['success'])
 
-        decisions_result = self.server.tools['get_item_decisions']['function'](self.item_id)
-        self.assertEqual(len(decisions_result['decisions']), 1)
-        self.assertEqual(decisions_result['decisions'][0]['choice'], "React Context")
+        decisions_result = self.server.tools[
+            'get_item_decisions']['function'](
+            self.item_id)
+        self.assertEqual(
+            len(decisions_result['decisions']), 1)
+        self.assertEqual(
+            decisions_result['decisions'][0]['choice'],
+            "React Context")
 
     def test_add_decision_tool_choice_only(self):
         """add_decision tool should work with just choice."""
@@ -3515,8 +3766,11 @@ class TestDecisionsMCPTools(unittest.TestCase):
         )
         self.assertTrue(result['success'])
 
-        decisions_result = self.server.tools['get_item_decisions']['function'](self.item_id)
-        self.assertEqual(len(decisions_result['decisions']), 1)
+        decisions_result = self.server.tools[
+            'get_item_decisions']['function'](
+            self.item_id)
+        self.assertEqual(
+            len(decisions_result['decisions']), 1)
 
     def test_get_item_decisions_tool(self):
         """get_item_decisions tool should return decisions."""
@@ -3529,7 +3783,9 @@ class TestDecisionsMCPTools(unittest.TestCase):
             choice="Decision 2"
         )
 
-        result = self.server.tools['get_item_decisions']['function'](self.item_id)
+        result = self.server.tools[
+            'get_item_decisions']['function'](
+            self.item_id)
         self.assertTrue(result['success'])
         self.assertEqual(result['count'], 2)
         self.assertEqual(len(result['decisions']), 2)
@@ -3542,31 +3798,48 @@ class TestDecisionsMCPTools(unittest.TestCase):
         )
         decision_id = add_result['decision_id']
 
-        delete_result = self.server.tools['delete_decision']['function'](decision_id)
+        delete_result = self.server.tools[
+            'delete_decision']['function'](
+            decision_id)
         self.assertTrue(delete_result['success'])
 
-        decisions_result = self.server.tools['get_item_decisions']['function'](self.item_id)
-        self.assertEqual(len(decisions_result['decisions']), 0)
+        decisions_result = self.server.tools[
+            'get_item_decisions']['function'](
+            self.item_id)
+        self.assertEqual(
+            len(decisions_result['decisions']), 0)
 
     def test_add_and_retrieve_decision(self):
         """Full workflow: add decision and retrieve it."""
-        # Add decision with all fields
-        add_result = self.server.tools['add_decision']['function'](
+        add_result = self.server.tools[
+            'add_decision']['function'](
             item_id=self.item_id,
             choice="MySQL over PostgreSQL",
-            rejected_alternatives="PostgreSQL (team unfamiliar), SQLite (too limited)",
-            rationale="Existing infrastructure uses MySQL"
+            rejected_alternatives=(
+                "PostgreSQL (team unfamiliar), "
+                "SQLite (too limited)"),
+            rationale=(
+                "Existing infrastructure uses MySQL")
         )
         self.assertTrue(add_result['success'])
 
         # Retrieve and verify
-        get_result = self.server.tools['get_item_decisions']['function'](self.item_id)
+        get_result = self.server.tools[
+            'get_item_decisions']['function'](
+            self.item_id)
         self.assertEqual(get_result['count'], 1)
 
         decision = get_result['decisions'][0]
-        self.assertEqual(decision['choice'], "MySQL over PostgreSQL")
-        self.assertEqual(decision['rejected_alternatives'], "PostgreSQL (team unfamiliar), SQLite (too limited)")
-        self.assertEqual(decision['rationale'], "Existing infrastructure uses MySQL")
+        self.assertEqual(
+            decision['choice'],
+            "MySQL over PostgreSQL")
+        self.assertEqual(
+            decision['rejected_alternatives'],
+            "PostgreSQL (team unfamiliar), "
+            "SQLite (too limited)")
+        self.assertEqual(
+            decision['rationale'],
+            "Existing infrastructure uses MySQL")
         self.assertIn('created_at', decision)
 
 
@@ -3578,7 +3851,10 @@ def _has_onnxruntime():
         return False
 
 
-@unittest.skipUnless(_has_onnxruntime(), "onnxruntime not installed (pip install kanban-mcp[semantic])")
+@unittest.skipUnless(
+    _has_onnxruntime(),
+    "onnxruntime not installed "
+    "(pip install kanban-mcp[semantic])")
 class TestEmbeddings(unittest.TestCase):
     """Tests for vector embedding functionality."""
 
@@ -3635,15 +3911,18 @@ class TestEmbeddings(unittest.TestCase):
         self.assertEqual(result['status'], 'created')
 
     def test_upsert_embedding_updates_on_content_change(self):
-        """upsert_embedding should update when content changes."""
-        # Get original embedding hash
-        original = self.db.get_embedding('item', self.item_id)
+        """upsert_embedding should update on change."""
+        original = self.db.get_embedding(
+            'item', self.item_id)
         original_hash = original['content_hash']
 
-        # Update item content directly (bypassing update_item to avoid auto-embed)
         with self.db._db_cursor(commit=True) as cursor:
-            cursor.execute("UPDATE items SET title = %s WHERE id = %s",
-                          ("Completely Different Title About Something Else", self.item_id))
+            cursor.execute(
+                "UPDATE items SET title = %s "
+                "WHERE id = %s",
+                ("Completely Different Title "
+                 "About Something Else",
+                 self.item_id))
 
         # Now upsert should detect change and update
         result = self.db.upsert_embedding('item', self.item_id)
@@ -3681,7 +3960,9 @@ class TestEmbeddings(unittest.TestCase):
     def test_semantic_search_returns_results(self):
         """semantic_search should return matching items."""
         self.db.upsert_embedding('item', self.item_id)
-        results = self.db.semantic_search(self.test_project_id, "authentication problem")
+        results = self.db.semantic_search(
+            self.test_project_id,
+            "authentication problem")
         self.assertGreater(len(results), 0)
         self.assertEqual(results[0]['source_type'], 'item')
 
@@ -3689,13 +3970,15 @@ class TestEmbeddings(unittest.TestCase):
         """Results should be ordered by similarity descending."""
         # Create items with different relevance
         id1 = self.db.create_item(self.test_project_id, "issue", "Login bug",
-                                   description="User cannot log in")
+                                  description="User cannot log in")
         id2 = self.db.create_item(self.test_project_id, "issue", "UI color",
-                                   description="Button is wrong color")
+                                  description="Button is wrong color")
         self.db.upsert_embedding('item', id1)
         self.db.upsert_embedding('item', id2)
 
-        results = self.db.semantic_search(self.test_project_id, "authentication login problem")
+        results = self.db.semantic_search(
+            self.test_project_id,
+            "authentication login problem")
         # Login bug should rank higher than UI color
         ids = [r['source_id'] for r in results]
         self.assertIn(id1, ids)
@@ -3705,29 +3988,40 @@ class TestEmbeddings(unittest.TestCase):
     def test_semantic_search_filter_by_type(self):
         """semantic_search should filter by source_type."""
         self.db.upsert_embedding('item', self.item_id)
-        decision_result = self.db.add_decision(self.item_id, "Use JWT for auth")
+        decision_result = self.db.add_decision(
+            self.item_id, "Use JWT for auth")
         decision_id = decision_result['decision_id']
         self.db.upsert_embedding('decision', decision_id)
 
-        results = self.db.semantic_search(self.test_project_id, "authentication", source_types=['decision'])
+        results = self.db.semantic_search(
+            self.test_project_id,
+            "authentication",
+            source_types=['decision'])
         source_types = [r['source_type'] for r in results]
-        self.assertTrue(all(t == 'decision' for t in source_types))
+        self.assertTrue(
+            all(t == 'decision' for t in source_types))
 
     def test_semantic_search_with_threshold(self):
-        """semantic_search should respect similarity threshold."""
+        """semantic_search should respect threshold."""
         self.db.upsert_embedding('item', self.item_id)
-        # Search with very high threshold should return no results for unrelated query
-        results = self.db.semantic_search(self.test_project_id, "basketball sports", threshold=0.9)
-        # The results should be fewer or empty for unrelated queries
-        auth_results = self.db.semantic_search(self.test_project_id, "authentication login", threshold=0.1)
-        self.assertGreaterEqual(len(auth_results), len(results))
+        results = self.db.semantic_search(
+            self.test_project_id,
+            "basketball sports", threshold=0.9)
+        auth_results = self.db.semantic_search(
+            self.test_project_id,
+            "authentication login",
+            threshold=0.1)
+        self.assertGreaterEqual(
+            len(auth_results), len(results))
 
     # --- Find Similar Tests ---
 
     def test_find_similar_returns_results(self):
         """find_similar should return similar items."""
-        id2 = self.db.create_item(self.test_project_id, "issue", "Auth problem",
-                                   description="Authentication is broken")
+        id2 = self.db.create_item(
+            self.test_project_id, "issue",
+            "Auth problem",
+            description="Authentication is broken")
         self.db.upsert_embedding('item', self.item_id)
         self.db.upsert_embedding('item', id2)
 
@@ -3759,7 +4053,10 @@ class TestEmbeddings(unittest.TestCase):
         self.assertFalse(result['success'])
 
 
-@unittest.skipUnless(_has_onnxruntime(), "onnxruntime not installed (pip install kanban-mcp[semantic])")
+@unittest.skipUnless(
+    _has_onnxruntime(),
+    "onnxruntime not installed "
+    "(pip install kanban-mcp[semantic])")
 class TestEmbeddingsMCPTools(unittest.TestCase):
     """Tests for embedding MCP tools."""
 
@@ -3772,10 +4069,13 @@ class TestEmbeddingsMCPTools(unittest.TestCase):
         self.server.current_project_id = None
         self.test_project_path = "/tmp/test-embeddings-mcp"
         cleanup_test_project(self.server.db, self.test_project_path)
-        self.server.tools['set_current_project']['function'](self.test_project_path)
+        self.server.tools[
+            'set_current_project']['function'](
+            self.test_project_path)
 
     def tearDown(self):
-        cleanup_test_project(self.server.db, self.test_project_path)
+        cleanup_test_project(
+            self.server.db, self.test_project_path)
 
     def test_semantic_search_tool_exists(self):
         """semantic_search tool should be registered."""
@@ -3860,13 +4160,20 @@ class TestCredentialHardening(unittest.TestCase):
 
     def _clear_env(self):
         """Remove all KANBAN_DB_ env vars."""
-        for key in ('KANBAN_DB_USER', 'KANBAN_DB_PASSWORD', 'KANBAN_DB_NAME', 'KANBAN_DB_HOST'):
+        for key in (
+            'KANBAN_DB_USER', 'KANBAN_DB_PASSWORD',
+            'KANBAN_DB_NAME', 'KANBAN_DB_HOST',
+        ):
             os.environ.pop(key, None)
 
     def setUp(self):
         # Save original env
-        self._orig = {k: os.environ.get(k) for k in
-                      ('KANBAN_DB_USER', 'KANBAN_DB_PASSWORD', 'KANBAN_DB_NAME', 'KANBAN_DB_HOST')}
+        self._orig = {
+            k: os.environ.get(k) for k in (
+                'KANBAN_DB_USER',
+                'KANBAN_DB_PASSWORD',
+                'KANBAN_DB_NAME',
+                'KANBAN_DB_HOST')}
 
     def tearDown(self):
         # Restore original env
@@ -3913,13 +4220,18 @@ class TestCredentialHardening(unittest.TestCase):
             KanbanDB()
         self.assertIn('KANBAN_DB_PASSWORD', str(ctx.exception))
 
-    def test_init_constructor_params_override_env(self):
+    @unittest.mock.patch(
+        'kanban_mcp.core.MySQLConnectionPool')
+    def test_init_constructor_params_override_env(self, mock_pool):
         from kanban_mcp.core import KanbanDB
         self._clear_env()
         # Pass valid params directly — should not raise even without env vars
-        db = KanbanDB(user='claude', password='claude_code_password', database='claude_code_kanban')
-        self.assertEqual(db.config['user'], 'claude')
-        self.assertEqual(db.config['database'], 'claude_code_kanban')
+        db = KanbanDB(
+            user='testuser',
+            password='testpass',
+            database='testdb')
+        self.assertEqual(db.config['user'], 'testuser')
+        self.assertEqual(db.config['database'], 'testdb')
 
     def test_init_error_message_lists_missing_vars(self):
         from kanban_mcp.core import KanbanDB
@@ -3960,7 +4272,10 @@ class TestCascadeDelete(unittest.TestCase):
             cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT COUNT(*) as cnt FROM items WHERE project_id = %s", (project_id,))
+            cursor.execute(
+                "SELECT COUNT(*) as cnt FROM items "
+                "WHERE project_id = %s",
+                (project_id,))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 
     def test_cascade_delete_project_removes_updates(self):
@@ -3972,7 +4287,11 @@ class TestCascadeDelete(unittest.TestCase):
             cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT COUNT(*) as cnt FROM updates WHERE project_id = %s", (project_id,))
+            cursor.execute(
+                "SELECT COUNT(*) as cnt "
+                "FROM updates "
+                "WHERE project_id = %s",
+                (project_id,))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 
     def test_cascade_delete_project_removes_update_items(self):
@@ -3984,7 +4303,11 @@ class TestCascadeDelete(unittest.TestCase):
             cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT COUNT(*) as cnt FROM update_items WHERE update_id = %s", (update_id,))
+            cursor.execute(
+                "SELECT COUNT(*) as cnt "
+                "FROM update_items "
+                "WHERE update_id = %s",
+                (update_id,))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 
     def test_cascade_delete_leaves_other_projects(self):
@@ -3997,7 +4320,9 @@ class TestCascadeDelete(unittest.TestCase):
             cursor.execute("DELETE FROM projects WHERE id = %s", (pid1,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT COUNT(*) as cnt FROM items WHERE project_id = %s", (pid2,))
+            cursor.execute(
+                "SELECT COUNT(*) as cnt FROM items "
+                "WHERE project_id = %s", (pid2,))
             self.assertEqual(cursor.fetchone()['cnt'], 1)
 
 
@@ -4041,7 +4366,10 @@ class TestEmbeddingFailureLogging(unittest.TestCase):
         cleanup_test_project(self.db, self.test_path)
 
     def test_create_item_embedding_failure_logged(self):
-        with patch.object(self.db, 'upsert_embedding', side_effect=ConnectionError("test")):
+        with patch.object(
+            self.db, 'upsert_embedding',
+            side_effect=ConnectionError("test"),
+        ):
             with self.assertLogs('kanban_mcp', level='DEBUG') as cm:
                 item_id = self.db.create_item(self.project_id, 'issue', 'Test')
         self.assertIsNotNone(item_id)
@@ -4049,25 +4377,41 @@ class TestEmbeddingFailureLogging(unittest.TestCase):
 
     def test_delete_item_embedding_failure_continues(self):
         item_id = self.db.create_item(self.project_id, 'issue', 'To Delete')
-        with patch.object(self.db, 'delete_embedding', side_effect=RuntimeError("test")):
+        with patch.object(
+            self.db, 'delete_embedding',
+            side_effect=RuntimeError("test"),
+        ):
             with self.assertLogs('kanban_mcp', level='DEBUG'):
                 result = self.db.delete_item(item_id)
         self.assertTrue(result['success'])
 
     def test_add_decision_embedding_failure_logged(self):
-        item_id = self.db.create_item(self.project_id, 'issue', 'For Decision')
-        with patch.object(self.db, 'upsert_embedding', side_effect=ConnectionError("test")):
+        item_id = self.db.create_item(
+            self.project_id, 'issue', 'For Decision')
+        with patch.object(
+            self.db, 'upsert_embedding',
+            side_effect=ConnectionError("test"),
+        ):
             with self.assertLogs('kanban_mcp', level='DEBUG') as cm:
                 result = self.db.add_decision(item_id, 'Use X')
         self.assertTrue(result['success'])
-        self.assertTrue(any('Embedding' in msg for msg in cm.output))
+        self.assertTrue(
+            any('Embedding' in msg
+                for msg in cm.output))
 
     def test_embedding_exception_type_preserved(self):
-        with patch.object(self.db, 'upsert_embedding', side_effect=ConnectionError("specific error")):
-            with self.assertLogs('kanban_mcp', level='DEBUG') as cm:
-                self.db.create_item(self.project_id, 'issue', 'Test')
-        # The exc_info=True in logger.debug should capture the ConnectionError
-        self.assertTrue(any('ConnectionError' in msg or 'specific error' in msg for msg in cm.output))
+        with patch.object(
+            self.db, 'upsert_embedding',
+            side_effect=ConnectionError(
+                "specific error")):
+            with self.assertLogs(
+                    'kanban_mcp', level='DEBUG') as cm:
+                self.db.create_item(
+                    self.project_id, 'issue', 'Test')
+        self.assertTrue(any(
+            'ConnectionError' in msg
+            or 'specific error' in msg
+            for msg in cm.output))
 
 
 class TestCleanupTestProject(unittest.TestCase):
@@ -4094,7 +4438,12 @@ class TestCleanupTestProject(unittest.TestCase):
         cleanup_test_project(self.db, self.test_path)
 
         with self.db._db_cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT COUNT(*) as cnt FROM item_relationships WHERE source_item_id = %s OR target_item_id = %s", (item1, item2))
+            cursor.execute(
+                "SELECT COUNT(*) as cnt "
+                "FROM item_relationships "
+                "WHERE source_item_id = %s "
+                "OR target_item_id = %s",
+                (item1, item2))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 
     def test_cleanup_idempotent(self):
@@ -4158,31 +4507,46 @@ class TestTimelineParsing(unittest.TestCase):
         update = self._make_update(linked_items='')
         # Simulate what _get_update_activities does with project-level queries
         linked_items_str = update.get('linked_items') or ''
-        parsed = [int(x.strip()) for x in linked_items_str.split(',') if x.strip() and x.strip().isdigit()]
+        parsed = [
+            int(x.strip())
+            for x in linked_items_str.split(',')
+            if x.strip() and x.strip().isdigit()]
         self.assertEqual(parsed, [])
 
     def test_timeline_null_linked_items(self):
         update = self._make_update(linked_items=None)
         linked_items_str = update.get('linked_items') or ''
-        parsed = [int(x.strip()) for x in linked_items_str.split(',') if x.strip() and x.strip().isdigit()]
+        parsed = [
+            int(x.strip())
+            for x in linked_items_str.split(',')
+            if x.strip() and x.strip().isdigit()]
         self.assertEqual(parsed, [])
 
     def test_timeline_single_linked_item(self):
         update = self._make_update(linked_items='42')
         linked_items_str = update.get('linked_items') or ''
-        parsed = [int(x.strip()) for x in linked_items_str.split(',') if x.strip() and x.strip().isdigit()]
+        parsed = [
+            int(x.strip())
+            for x in linked_items_str.split(',')
+            if x.strip() and x.strip().isdigit()]
         self.assertEqual(parsed, [42])
 
     def test_timeline_whitespace_in_linked_items(self):
         update = self._make_update(linked_items='42, ,, 99')
         linked_items_str = update.get('linked_items') or ''
-        parsed = [int(x.strip()) for x in linked_items_str.split(',') if x.strip() and x.strip().isdigit()]
+        parsed = [
+            int(x.strip())
+            for x in linked_items_str.split(',')
+            if x.strip() and x.strip().isdigit()]
         self.assertEqual(parsed, [42, 99])
 
     def test_timeline_non_numeric_linked_items(self):
         update = self._make_update(linked_items='abc,42')
         linked_items_str = update.get('linked_items') or ''
-        parsed = [int(x.strip()) for x in linked_items_str.split(',') if x.strip() and x.strip().isdigit()]
+        parsed = [
+            int(x.strip())
+            for x in linked_items_str.split(',')
+            if x.strip() and x.strip().isdigit()]
         self.assertEqual(parsed, [42])
 
 
@@ -4220,7 +4584,7 @@ class TestCLIInputValidation(unittest.TestCase):
 
     def test_cli_trailing_comma(self):
         # "1,2," — trailing comma should work (empty string filtered out)
-        # This will try to query items 1,2 which may not exist, but shouldn't error on parsing
+        # items 1,2 may not exist, but shouldn't error
         result = self._call_export("1,2,")
         self.assertNotIn("Error", result)
 

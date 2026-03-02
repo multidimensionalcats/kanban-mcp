@@ -18,6 +18,8 @@
 #   --docker          Use Docker for MySQL (starts docker compose stack)
 #   --db-host HOST    MySQL host (default: localhost)
 #   --with-semantic   Also install semantic search dependencies
+#   --upgrade         Upgrade existing Docker install (re-downloads files, rebuilds, restarts)
+#   --uninstall       Remove kanban-mcp (package, config, optionally DB and Docker data)
 #
 # Environment variables (for --auto mode):
 #   KANBAN_DB_NAME, KANBAN_DB_USER, KANBAN_DB_PASSWORD, KANBAN_DB_HOST,
@@ -28,9 +30,14 @@ set -euo pipefail
 GITHUB_RAW="https://raw.githubusercontent.com/multidimensionalcats/kanban-mcp/main"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kanban-mcp"
 
+# Ensure common install locations are on PATH (pipx, pip --user)
+export PATH="$HOME/.local/bin:$PATH"
+
 AUTO=false
 USE_DOCKER=false
 WITH_SEMANTIC=false
+UPGRADE=false
+UNINSTALL=false
 DB_HOST_ARG=""
 
 for arg in "$@"; do
@@ -38,17 +45,21 @@ for arg in "$@"; do
         --auto) AUTO=true ;;
         --docker) USE_DOCKER=true ;;
         --with-semantic) WITH_SEMANTIC=true ;;
+        --upgrade) UPGRADE=true ;;
+        --uninstall) UNINSTALL=true ;;
         --db-host)
             # handled below with shift
             ;;
         --help|-h)
-            echo "Usage: ./install.sh [--auto] [--docker] [--db-host HOST] [--with-semantic]"
+            echo "Usage: ./install.sh [--auto] [--docker] [--db-host HOST] [--with-semantic] [--upgrade] [--uninstall]"
             echo ""
             echo "Options:"
             echo "  --auto            Non-interactive mode (uses env vars or defaults)"
             echo "  --docker          Use Docker for MySQL"
             echo "  --db-host HOST    MySQL host (default: localhost)"
             echo "  --with-semantic   Also install semantic search dependencies"
+            echo "  --upgrade         Upgrade an existing Docker installation"
+            echo "  --uninstall       Remove kanban-mcp (package, config, optionally DB and Docker data)"
             echo ""
             echo "Environment variables (for --auto mode):"
             echo "  KANBAN_DB_NAME       Database name (default: kanban)"
@@ -77,6 +88,174 @@ done
 
 echo "=== kanban-mcp Install ==="
 echo
+
+# ─── Upgrade path (early exit) ────────────────────────────────────
+
+if [ "$UPGRADE" = true ]; then
+    docker_dir="$CONFIG_DIR/docker"
+    compose_file="$docker_dir/docker-compose.yml"
+
+    if [ ! -f "$compose_file" ]; then
+        echo "Error: No Docker installation found at $docker_dir"
+        echo "For pipx upgrades:  pipx upgrade kanban-mcp"
+        echo "For fresh install:  ./install.sh --docker"
+        exit 1
+    fi
+
+    if ! command -v docker &>/dev/null || ! docker compose version &>/dev/null; then
+        echo "Error: Docker or docker compose not found."
+        exit 1
+    fi
+
+    echo "Upgrading Docker installation..."
+    echo
+
+    # Re-download latest Docker files
+    echo "Downloading latest files..."
+    curl -fsSL "$GITHUB_RAW/docker-compose.yml" -o "$compose_file"
+    curl -fsSL "$GITHUB_RAW/Dockerfile" -o "$docker_dir/Dockerfile"
+    curl -fsSL "$GITHUB_RAW/entrypoint.sh" -o "$docker_dir/entrypoint.sh"
+    chmod +x "$docker_dir/entrypoint.sh"
+    echo "Files updated."
+    echo
+
+    # Load .env for compose
+    if [ -f "$CONFIG_DIR/.env" ]; then
+        set -a
+        # shellcheck source=/dev/null
+        source "$CONFIG_DIR/.env"
+        set +a
+    fi
+
+    # Rebuild and restart
+    echo "Rebuilding web image..."
+    docker compose -f "$compose_file" build --no-cache
+    echo
+
+    echo "Restarting services..."
+    docker compose -f "$compose_file" up -d
+    echo
+
+    echo "=== Upgrade complete ==="
+    echo "The web container will run any pending database migrations on startup."
+    echo "Check logs: docker compose -f $compose_file logs -f web"
+    exit 0
+fi
+
+# ─── Uninstall path (early exit) ─────────────────────────────────────
+
+if [ "$UNINSTALL" = true ]; then
+    echo "=== kanban-mcp Uninstall ==="
+    echo
+    removed=""
+
+    # 1. Remove pipx package
+    if command -v pipx &>/dev/null && pipx list 2>/dev/null | grep -q "kanban-mcp"; then
+        echo "Removing kanban-mcp package..."
+        pipx uninstall kanban-mcp
+        removed="${removed}  - kanban-mcp pipx package\n"
+    else
+        echo "kanban-mcp pipx package not found (skipping)."
+    fi
+
+    # Warn if kanban-mcp is still on PATH (pip/source install)
+    if command -v kanban-mcp &>/dev/null; then
+        echo "Warning: kanban-mcp is still on PATH (likely a pip or source install)."
+        echo "  Location: $(command -v kanban-mcp)"
+        echo "  To remove: pip uninstall kanban-mcp"
+    fi
+    echo
+
+    # 2. Docker cleanup
+    compose_file="$CONFIG_DIR/docker/docker-compose.yml"
+    if [ -f "$compose_file" ]; then
+        if command -v docker &>/dev/null && docker compose version &>/dev/null 2>&1; then
+            # Load .env so compose can resolve variables
+            if [ -f "$CONFIG_DIR/.env" ]; then
+                set -a
+                # shellcheck source=/dev/null
+                source "$CONFIG_DIR/.env"
+                set +a
+            fi
+
+            echo "Stopping Docker containers..."
+            docker compose -f "$compose_file" down
+            removed="${removed}  - Docker containers\n"
+
+            if [ "$AUTO" = false ]; then
+                echo
+                read -rp "Remove Docker data volume? This DELETES ALL kanban data. [y/N] " REMOVE_VOLUME < /dev/tty
+                REMOVE_VOLUME=${REMOVE_VOLUME:-N}
+                if [[ "$REMOVE_VOLUME" =~ ^[Yy] ]]; then
+                    docker compose -f "$compose_file" down -v
+                    removed="${removed}  - Docker data volume\n"
+                fi
+            fi
+        else
+            echo "Docker not available — skipping container cleanup."
+            echo "Docker files remain at: $CONFIG_DIR/docker/"
+        fi
+    fi
+    echo
+
+    # 3. MySQL database cleanup
+    if [ "$AUTO" = false ]; then
+        read -rp "Drop MySQL database and user? [y/N] " DROP_DB < /dev/tty
+        DROP_DB=${DROP_DB:-N}
+        if [[ "$DROP_DB" =~ ^[Yy] ]]; then
+            # Read DB name/user from .env if available
+            db_name="${KANBAN_DB_NAME:-kanban}"
+            db_user="${KANBAN_DB_USER:-kanban}"
+            db_host="${KANBAN_DB_HOST:-localhost}"
+
+            if [ -f "$CONFIG_DIR/.env" ]; then
+                # Source again in case not already loaded
+                set -a
+                # shellcheck source=/dev/null
+                source "$CONFIG_DIR/.env"
+                set +a
+                db_name="${KANBAN_DB_NAME:-$db_name}"
+                db_user="${KANBAN_DB_USER:-$db_user}"
+                db_host="${KANBAN_DB_HOST:-$db_host}"
+            fi
+
+            echo "Will drop database '$db_name' and user '$db_user' on '$db_host'."
+            read -rp "MySQL admin user [root]: " MYSQL_ADMIN < /dev/tty
+            MYSQL_ADMIN=${MYSQL_ADMIN:-root}
+            read -rsp "MySQL admin password: " MYSQL_ADMIN_PW < /dev/tty
+            echo
+
+            if command -v mysql &>/dev/null; then
+                mysql -h "$db_host" -u "$MYSQL_ADMIN" -p"$MYSQL_ADMIN_PW" -e \
+                    "DROP DATABASE IF EXISTS \`$db_name\`; DROP USER IF EXISTS '$db_user'@'%'; DROP USER IF EXISTS '$db_user'@'localhost'; FLUSH PRIVILEGES;" 2>/dev/null \
+                    && removed="${removed}  - MySQL database '$db_name' and user '$db_user'\n" \
+                    || echo "Warning: Failed to drop database/user. You may need to do this manually."
+            else
+                echo "mysql client not found. Drop manually:"
+                echo "  DROP DATABASE IF EXISTS \`$db_name\`;"
+                echo "  DROP USER IF EXISTS '$db_user'@'localhost';"
+            fi
+        fi
+    fi
+    echo
+
+    # 4. Remove config directory
+    if [ -d "$CONFIG_DIR" ]; then
+        echo "Removing config directory: $CONFIG_DIR"
+        rm -rf "$CONFIG_DIR"
+        removed="${removed}  - Config directory ($CONFIG_DIR)\n"
+    fi
+
+    echo
+    echo "=== Uninstall complete ==="
+    if [ -n "$removed" ]; then
+        echo
+        echo "Removed:"
+        echo -e "$removed"
+    fi
+    echo "You may also want to remove kanban-mcp from your MCP client config."
+    exit 0
+fi
 
 # ─── Helper functions ───────────────────────────────────────────────
 
@@ -112,6 +291,10 @@ check_pipx() {
 }
 
 install_pipx() {
+    if command -v pipx &>/dev/null; then
+        echo "Found pipx"
+        return 0
+    fi
     echo "Installing pipx..."
     $PYTHON -m pip install --user pipx 2>/dev/null || $PYTHON -m pip install pipx 2>/dev/null || {
         echo "Error: Could not install pipx. Install it manually:"
@@ -119,8 +302,6 @@ install_pipx() {
         exit 1
     }
     $PYTHON -m pipx ensurepath 2>/dev/null || pipx ensurepath 2>/dev/null || true
-    # Re-check PATH
-    export PATH="$HOME/.local/bin:$PATH"
     if ! command -v pipx &>/dev/null; then
         echo "pipx installed but not in PATH. You may need to restart your shell."
         echo "Continuing with: $PYTHON -m pipx"
@@ -172,15 +353,8 @@ download_docker_files() {
     echo "Downloading Docker files..."
     curl -fsSL "$GITHUB_RAW/docker-compose.yml" -o "$docker_dir/docker-compose.yml"
     curl -fsSL "$GITHUB_RAW/Dockerfile" -o "$docker_dir/Dockerfile"
-    curl -fsSL "$GITHUB_RAW/pyproject.toml" -o "$docker_dir/pyproject.toml"
-
-    # Download migrations
-    mkdir -p "$docker_dir/kanban_mcp/migrations"
-    # Download __init__.py for the package
-    curl -fsSL "$GITHUB_RAW/kanban_mcp/__init__.py" -o "$docker_dir/kanban_mcp/__init__.py"
-    for migration in 001_initial_schema.sql 002_add_fulltext_search.sql 003_add_embeddings.sql 004_add_cascades_and_indexes.sql; do
-        curl -fsSL "$GITHUB_RAW/kanban_mcp/migrations/$migration" -o "$docker_dir/kanban_mcp/migrations/$migration"
-    done
+    curl -fsSL "$GITHUB_RAW/entrypoint.sh" -o "$docker_dir/entrypoint.sh"
+    chmod +x "$docker_dir/entrypoint.sh"
 
     echo "Docker files downloaded to $docker_dir"
 }
@@ -211,72 +385,18 @@ start_docker_mysql() {
     echo "Check status with: docker compose -f $docker_dir/docker-compose.yml ps"
 }
 
-find_migrations() {
-    MIGRATIONS_DIR=""
-    if [ -d "./kanban_mcp/migrations" ]; then
-        MIGRATIONS_DIR="./kanban_mcp/migrations"
-    else
-        local pkg_dir
-        pkg_dir=$($PYTHON -c "import kanban_mcp; import os; print(os.path.dirname(kanban_mcp.__file__))" 2>/dev/null || true)
-        if [ -n "$pkg_dir" ] && [ -d "$pkg_dir/migrations" ]; then
-            MIGRATIONS_DIR="$pkg_dir/migrations"
-        fi
-    fi
-}
-
 run_db_setup() {
     local db_host="$1" db_name="$2" db_user="$3" db_password="$4"
 
-    # Check mysql client is available
-    if ! command -v mysql &>/dev/null; then
-        echo "Error: mysql client not found. Install it first:"
-        echo "  Ubuntu/Debian: sudo apt install mysql-client"
-        echo "  macOS:         brew install mysql-client"
-        echo "  Arch:          sudo pacman -S mariadb-clients"
-        exit 1
-    fi
+    echo "--- Running kanban-setup ---"
 
-    find_migrations
-    if [ -z "$MIGRATIONS_DIR" ]; then
-        echo "Error: Could not find migration files."
-        echo "Ensure kanban-mcp is installed (pipx install kanban-mcp)."
-        exit 1
-    fi
-
-    echo "Found migrations in: $MIGRATIONS_DIR"
-    echo
-
-    # --- Create database and user ---
-    echo "--- Creating database and user ---"
-
-    MYSQL_ROOT_USER="${MYSQL_ROOT_USER:-root}"
-    local MYSQL_AUTH=(-u "$MYSQL_ROOT_USER" -h "$db_host")
-    if [ -n "${MYSQL_ROOT_PASSWORD:-}" ]; then
-        MYSQL_AUTH+=(-p"$MYSQL_ROOT_PASSWORD")
-    elif [ "$AUTO" = false ]; then
-        echo "(You may be prompted for the MySQL root password)"
-        MYSQL_AUTH+=(-p)
-    fi
-
-    mysql "${MYSQL_AUTH[@]}" <<EOF
-CREATE DATABASE IF NOT EXISTS \`$db_name\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '$db_user'@'%' IDENTIFIED BY '$db_password';
-GRANT ALL PRIVILEGES ON \`$db_name\`.* TO '$db_user'@'%';
-FLUSH PRIVILEGES;
-EOF
-
-    echo "Database and user created."
-
-    # --- Run migrations ---
-    echo
-    echo "--- Running migrations ---"
-
-    for migration in "$MIGRATIONS_DIR"/0*.sql; do
-        echo "  Applying $(basename "$migration")..."
-        mysql -u "$db_user" -p"$db_password" -h "$db_host" "$db_name" < "$migration"
-    done
-
-    echo "Migrations complete."
+    KANBAN_DB_HOST="$db_host" \
+    KANBAN_DB_NAME="$db_name" \
+    KANBAN_DB_USER="$db_user" \
+    KANBAN_DB_PASSWORD="$db_password" \
+    MYSQL_ROOT_USER="${MYSQL_ROOT_USER:-root}" \
+    MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}" \
+    kanban-setup --auto
 }
 
 write_env() {
@@ -290,7 +410,7 @@ write_env() {
         if [ "$AUTO" = true ]; then
             true  # overwrite silently
         else
-            read -rp "$env_file already exists. Overwrite? [y/N] " OVERWRITE
+            read -rp "$env_file already exists. Overwrite? [y/N] " OVERWRITE < /dev/tty
             OVERWRITE=${OVERWRITE:-N}
             if [[ ! "$OVERWRITE" =~ ^[Yy] ]]; then
                 echo "Skipping .env generation."
@@ -312,7 +432,7 @@ EOF
 }
 
 print_next_steps() {
-    local db_host="$1" db_user="$2" db_password="$3" db_name="$4"
+    local db_host="$1" db_user="$2" db_password="$3" db_name="$4" is_docker="${5:-false}"
 
     echo
     echo "=== Setup complete ==="
@@ -336,9 +456,13 @@ print_next_steps() {
     echo '     }'
     echo '   }'
     echo
-    echo "2. Start the web UI (optional):"
-    echo "   kanban-web"
-    echo "   Open http://localhost:5000"
+    if [ "$is_docker" = true ]; then
+        echo "2. The web UI is running at http://localhost:5000"
+    else
+        echo "2. Start the web UI (optional):"
+        echo "   kanban-web"
+        echo "   Open http://localhost:5000"
+    fi
     echo
     echo "3. Verify installation:"
     echo "   kanban-cli --project /path/to/your/project summary"
@@ -359,7 +483,7 @@ if ! command -v kanban-mcp &>/dev/null; then
         install_kanban_mcp
     else
         echo "kanban-mcp is not installed."
-        read -rp "Install kanban-mcp via pipx? [Y/n] " INSTALL_IT
+        read -rp "Install kanban-mcp via pipx? [Y/n] " INSTALL_IT < /dev/tty
         INSTALL_IT=${INSTALL_IT:-Y}
         if [[ "$INSTALL_IT" =~ ^[Yy] ]]; then
             if ! check_pipx; then
@@ -395,7 +519,7 @@ else
     echo "  1) Local MySQL (default)"
     echo "  2) Remote MySQL server"
     echo "  3) Docker (starts MySQL in a container)"
-    read -rp "Choice [1]: " MYSQL_CHOICE
+    read -rp "Choice [1]: " MYSQL_CHOICE < /dev/tty
     MYSQL_CHOICE=${MYSQL_CHOICE:-1}
 
     case "$MYSQL_CHOICE" in
@@ -422,7 +546,7 @@ case "$MYSQL_METHOD" in
                     echo "Or start MySQL manually and re-run this script."
                     exit 1
                 fi
-                read -rp "Start MySQL via Docker? [Y/n] " START_DOCKER
+                read -rp "Start MySQL via Docker? [Y/n] " START_DOCKER < /dev/tty
                 START_DOCKER=${START_DOCKER:-Y}
                 if [[ "$START_DOCKER" =~ ^[Yy] ]]; then
                     MYSQL_METHOD="docker"
@@ -446,7 +570,7 @@ case "$MYSQL_METHOD" in
 
     remote)
         if [ -z "$DB_HOST" ]; then
-            read -rp "MySQL host: " DB_HOST
+            read -rp "MySQL host: " DB_HOST < /dev/tty
         fi
         if [ -z "$DB_HOST" ]; then
             echo "Error: No host provided."
@@ -454,7 +578,7 @@ case "$MYSQL_METHOD" in
         fi
         local_port="3306"
         if [ "$AUTO" = false ]; then
-            read -rp "MySQL port [$local_port]: " DB_PORT_INPUT
+            read -rp "MySQL port [$local_port]: " DB_PORT_INPUT < /dev/tty
             local_port=${DB_PORT_INPUT:-$local_port}
         fi
         echo "Will connect to MySQL at $DB_HOST:$local_port"
@@ -491,10 +615,9 @@ if [ "$MYSQL_METHOD" = "docker" ]; then
     start_docker_mysql
     echo
 
-    # Write .env and print instructions — no manual DB setup needed
-    # (Docker initdb.d handles schema + migrations automatically)
+    # Write .env and print instructions
     write_env "$DB_HOST" "$DB_USER" "$DB_PASSWORD" "$DB_NAME"
-    print_next_steps "$DB_HOST" "$DB_USER" "$DB_PASSWORD" "$DB_NAME"
+    print_next_steps "$DB_HOST" "$DB_USER" "$DB_PASSWORD" "$DB_NAME" true
 
     echo "Docker compose files: $CONFIG_DIR/docker/"
     echo "Manage with: docker compose -f $CONFIG_DIR/docker/docker-compose.yml [up|down|logs]"
@@ -515,13 +638,13 @@ else
             DB_PASSWORD="$KANBAN_DB_PASSWORD"
         fi
     else
-        read -rp "Database name [kanban]: " DB_NAME
+        read -rp "Database name [kanban]: " DB_NAME < /dev/tty
         DB_NAME=${DB_NAME:-kanban}
 
-        read -rp "Database user [kanban]: " DB_USER
+        read -rp "Database user [kanban]: " DB_USER < /dev/tty
         DB_USER=${DB_USER:-kanban}
 
-        read -rp "Database password (leave blank to auto-generate): " DB_PASSWORD
+        read -rp "Database password (leave blank to auto-generate): " DB_PASSWORD < /dev/tty
         if [ -z "$DB_PASSWORD" ]; then
             DB_PASSWORD=$($PYTHON -c "import secrets; print(secrets.token_urlsafe(16))" 2>/dev/null || openssl rand -base64 16)
             echo "Generated password: $DB_PASSWORD"
@@ -534,7 +657,7 @@ else
             true
         fi
 
-        read -rp "MySQL root user for setup [root]: " MYSQL_ROOT_USER_INPUT
+        read -rp "MySQL root user for setup [root]: " MYSQL_ROOT_USER_INPUT < /dev/tty
         MYSQL_ROOT_USER=${MYSQL_ROOT_USER_INPUT:-${MYSQL_ROOT_USER:-root}}
     fi
 
@@ -546,7 +669,7 @@ else
     echo
 
     if [ "$AUTO" = false ]; then
-        read -rp "Proceed? [Y/n] " CONFIRM
+        read -rp "Proceed? [Y/n] " CONFIRM < /dev/tty
         CONFIRM=${CONFIRM:-Y}
         if [[ ! "$CONFIRM" =~ ^[Yy] ]]; then
             echo "Aborted."

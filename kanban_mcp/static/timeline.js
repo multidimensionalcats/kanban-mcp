@@ -36,9 +36,6 @@ function openTimelineDrawer(itemId = null) {
     const drawer = document.getElementById('timeline-drawer');
     drawer.classList.add('open');
 
-    // Close updates drawer if open
-    document.querySelector('.updates-drawer')?.classList.remove('open');
-
     // Show/hide item toggle based on whether we have an item context
     const itemBtn = document.getElementById('timeline-item-btn');
     if (itemId) {
@@ -277,8 +274,8 @@ function createTimelineEntryElement(entry) {
             detailsEl.appendChild(rationaleEl);
             contentEl.appendChild(detailsEl);
         } else if (entry.activity_type === 'update' && entry.details.content) {
-            const content = entry.details.content;
-            detailsEl.textContent = content.length > 100 ? content.substring(0, 100) + '...' : content;
+            detailsEl.className = 'timeline-entry-details timeline-update-content';
+            detailsEl.textContent = entry.details.content;
             contentEl.appendChild(detailsEl);
         }
     }
@@ -373,4 +370,125 @@ function formatTime(timestamp) {
 function openItemTimeline(itemId) {
     currentTimelineItemId = itemId;
     openTimelineDrawer(itemId);
+}
+
+/**
+ * Toggle the inline new update form in the activity panel
+ */
+function toggleActivityNewUpdate() {
+    const form = document.getElementById('activity-new-update');
+    const isHidden = form.style.display === 'none';
+    form.style.display = isHidden ? '' : 'none';
+
+    if (isHidden) {
+        // Populate item selector
+        fetch(`/api/items?project=${PROJECT_ID}`)
+            .then(r => r.json())
+            .then(data => {
+                const select = document.getElementById('activity-update-items');
+                select.replaceChildren();
+                (data.items || []).forEach(item => {
+                    const opt = document.createElement('option');
+                    opt.value = item.id;
+                    opt.textContent = `#${item.id} ${item.title}`;
+                    select.appendChild(opt);
+                });
+            })
+            .catch(err => console.error('Failed to load items:', err));
+    }
+}
+
+/**
+ * Create an update from the inline activity panel form
+ */
+async function createActivityUpdate() {
+    const textarea = document.getElementById('activity-update-content');
+    const content = (textarea.value || '').trim();
+    if (!content) return;
+
+    const select = document.getElementById('activity-update-items');
+    const selectedItems = Array.from(select.selectedOptions).map(o => parseInt(o.value));
+
+    const body = {
+        project_id: PROJECT_ID,
+        content: content
+    };
+    if (selectedItems.length > 0) {
+        body.item_ids = selectedItems;
+    }
+
+    try {
+        await fetch('/api/updates', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+
+        // Clear form and hide
+        textarea.value = '';
+        document.getElementById('activity-new-update').style.display = 'none';
+
+        // Reload current timeline view
+        if (currentTimelineView === 'item' && currentTimelineItemId) {
+            loadItemTimeline(currentTimelineItemId);
+        } else {
+            loadProjectTimeline();
+        }
+    } catch (error) {
+        console.error('Failed to create update:', error);
+    }
+}
+
+/**
+ * Filter activity entries by text search, respecting type filter state
+ * @param {string} query - Search query
+ */
+function filterActivityEntries(query) {
+    const q = (query || '').toLowerCase().trim();
+    const entries = document.querySelectorAll('.timeline-entry');
+
+    // Get active type filters
+    const checkboxes = document.querySelectorAll('.timeline-filter-checkbox input');
+    const activeTypes = [];
+    checkboxes.forEach(checkbox => {
+        if (checkbox.checked) {
+            activeTypes.push(checkbox.dataset.filter);
+        }
+    });
+
+    entries.forEach(entry => {
+        const type = entry.dataset.activityType;
+        const typeVisible = activeTypes.includes(type);
+
+        if (!typeVisible) {
+            entry.style.display = 'none';
+            return;
+        }
+
+        if (q === '') {
+            entry.style.display = '';
+            return;
+        }
+
+        const text = entry.textContent.toLowerCase();
+        entry.style.display = text.includes(q) ? '' : 'none';
+    });
+}
+
+// Export for testing (CommonJS for Jest compatibility)
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        createTimelineEntryElement,
+        renderTimeline,
+        filterTimelineByType,
+        filterActivityEntries,
+        toggleActivityNewUpdate,
+        createActivityUpdate,
+        openTimelineDrawer,
+        closeTimelineDrawer,
+        switchTimelineView,
+        loadProjectTimeline,
+        loadItemTimeline,
+        openItemTimeline
+    };
 }

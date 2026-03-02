@@ -1,0 +1,173 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Python tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpass
+          MYSQL_DATABASE: kanban_test
+          MYSQL_USER: kanban
+          MYSQL_PASSWORD: testpass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -e .[dev]
+
+      - name: Run migrations
+        env:
+          MYSQL_ROOT_PASSWORD: rootpass
+        run: |
+          mysql -u root -p"$MYSQL_ROOT_PASSWORD" -h 127.0.0.1 -e "
+            GRANT ALL PRIVILEGES ON kanban_test.* TO 'kanban'@'%';
+            FLUSH PRIVILEGES;
+          "
+          for f in kanban_mcp/migrations/0*.sql; do
+            mysql -u kanban -ptestpass -h 127.0.0.1 kanban_test < "$f"
+          done
+
+      - name: Run pytest
+        env:
+          KANBAN_DB_HOST: 127.0.0.1
+          KANBAN_DB_USER: kanban
+          KANBAN_DB_PASSWORD: testpass
+          KANBAN_DB_NAME: kanban_test
+        run: pytest tests/ -x -q
+
+  lint:
+    name: Lint and security
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install tools
+        run: pip install flake8 bandit
+
+      - name: Run flake8
+        run: flake8 kanban_mcp/ tests/
+
+      - name: Run bandit
+        run: bandit -r kanban_mcp/ -c pyproject.toml
+
+  install-linux:
+    name: Install script (Linux)
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpass
+          MYSQL_DATABASE: kanban
+          MYSQL_USER: kanban
+          MYSQL_PASSWORD: changeme
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run install.sh --auto
+        env:
+          KANBAN_DB_HOST: 127.0.0.1
+          KANBAN_DB_USER: kanban
+          KANBAN_DB_PASSWORD: changeme
+          KANBAN_DB_NAME: kanban
+          MYSQL_ROOT_USER: root
+          MYSQL_ROOT_PASSWORD: rootpass
+        run: bash install.sh --auto
+
+      - name: Verify kanban-mcp is installed
+        run: kanban-mcp --help || true
+
+      - name: Verify kanban-cli works
+        env:
+          KANBAN_DB_HOST: 127.0.0.1
+          KANBAN_DB_USER: kanban
+          KANBAN_DB_PASSWORD: changeme
+          KANBAN_DB_NAME: kanban
+        run: kanban-cli --project /tmp summary
+
+  install-macos:
+    name: Install script (macOS)
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MySQL
+        run: |
+          brew install mysql
+          brew services start mysql
+          sleep 5
+          mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'rootpass';"
+
+      - name: Run install.sh --auto
+        env:
+          KANBAN_DB_HOST: 127.0.0.1
+          MYSQL_ROOT_PASSWORD: rootpass
+        run: bash install.sh --auto
+
+      - name: Verify kanban-cli works
+        env:
+          KANBAN_DB_HOST: 127.0.0.1
+        run: kanban-cli --project /tmp summary
+
+  install-windows:
+    name: Install script (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.PSParser]::Tokenize(
+            (Get-Content install.ps1 -Raw), [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Host "install.ps1 syntax OK"

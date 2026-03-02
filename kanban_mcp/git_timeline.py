@@ -9,8 +9,7 @@ import time
 import logging
 from datetime import datetime
 from functools import lru_cache
-from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +24,7 @@ class GitTimelineProvider:
     - LRU caching with 5-minute TTL
     """
 
-    # Pattern to match item references in commit messages: #123, fixes #456, etc.
+    # Pattern to match item references in commit messages
     ITEM_REF_PATTERN = re.compile(r'#(\d+)')
 
     # Cache TTL in seconds
@@ -35,7 +34,8 @@ class GitTimelineProvider:
         """Initialize git provider.
 
         Args:
-            repo_path: Path to git repository. If None, will be set later via set_repo_path.
+            repo_path: Path to git repository. If None,
+                will be set later via set_repo_path.
         """
         self._repo = None
         self._repo_path = repo_path
@@ -58,7 +58,10 @@ class GitTimelineProvider:
             self._repo = git.Repo(self._repo_path)
             return True
         except Exception as e:
-            logger.warning(f"Failed to initialize git repo at {self._repo_path}: {e}")
+            logger.warning(
+                "Failed to initialize git repo at "
+                f"{self._repo_path}: {e}"
+            )
             self._repo = None
             return False
 
@@ -93,7 +96,10 @@ class GitTimelineProvider:
         return age < self.CACHE_TTL
 
     @lru_cache(maxsize=32)
-    def _get_commits_cached(self, branch: str, since_timestamp: float, limit: int) -> tuple:
+    def _get_commits_cached(
+        self, branch: str, since_timestamp: float,
+        limit: int
+    ) -> tuple:
         """Cached commit fetching (returns tuple for hashability)."""
         if not self._repo:
             return tuple()
@@ -112,15 +118,23 @@ class GitTimelineProvider:
                     'summary': commit.summary,
                     'author': commit.author.name,
                     'author_email': commit.author.email,
-                    'timestamp': datetime.fromtimestamp(commit.authored_date),
-                    'files': list(commit.stats.files.keys()) if hasattr(commit.stats, 'files') else []
+                    'timestamp': datetime.fromtimestamp(
+                        commit.authored_date
+                    ),
+                    'files': (
+                        list(commit.stats.files.keys())
+                        if hasattr(commit.stats, 'files')
+                        else []
+                    )
                 })
             return tuple(commits)
         except Exception as e:
             logger.warning(f"Failed to get commits: {e}")
             return tuple()
 
-    def get_project_commits(self, since: datetime = None, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_project_commits(
+        self, since: datetime = None, limit: int = 100
+    ) -> List[Dict[str, Any]]:
         """Get commits from the current branch.
 
         Args:
@@ -149,7 +163,9 @@ class GitTimelineProvider:
         commits = self._get_commits_cached(branch, since_ts, limit)
         return list(commits)
 
-    def get_item_commits(self, item_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_item_commits(
+        self, item_id: int, limit: int = 50
+    ) -> List[Dict[str, Any]]:
         """Get commits that reference a specific item ID.
 
         Searches commit messages for patterns like #123, fixes #123, etc.
@@ -164,7 +180,10 @@ class GitTimelineProvider:
         if not self._repo:
             return []
 
-        all_commits = self.get_project_commits(limit=limit * 2)  # Get more to filter
+        # Get more to filter
+        all_commits = self.get_project_commits(
+            limit=limit * 2
+        )
         matching = []
 
         for commit in all_commits:
@@ -180,7 +199,9 @@ class GitTimelineProvider:
 
         return matching
 
-    def get_file_commits(self, file_path: str, limit: int = 20) -> List[Dict[str, Any]]:
+    def get_file_commits(
+        self, file_path: str, limit: int = 20
+    ) -> List[Dict[str, Any]]:
         """Get commits that touched a specific file.
 
         Args:
@@ -195,7 +216,9 @@ class GitTimelineProvider:
 
         try:
             commits = []
-            for commit in self._repo.iter_commits(paths=file_path, max_count=limit):
+            for commit in self._repo.iter_commits(
+                paths=file_path, max_count=limit
+            ):
                 commits.append({
                     'sha': commit.hexsha,
                     'sha_short': commit.hexsha[:7],
@@ -208,10 +231,16 @@ class GitTimelineProvider:
                 })
             return commits
         except Exception as e:
-            logger.warning(f"Failed to get commits for file {file_path}: {e}")
+            logger.warning(
+                "Failed to get commits for file "
+                f"{file_path}: {e}"
+            )
             return []
 
-    def get_commits_for_linked_files(self, file_paths: List[str], limit: int = 20) -> List[Dict[str, Any]]:
+    def get_commits_for_linked_files(
+        self, file_paths: List[str],
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
         """Get commits for multiple linked files, merged and sorted by date.
 
         Args:
@@ -228,7 +257,10 @@ class GitTimelineProvider:
         seen_shas = set()
 
         for file_path in file_paths:
-            commits = self.get_file_commits(file_path, limit=limit // len(file_paths) + 1)
+            per_file = limit // len(file_paths) + 1
+            commits = self.get_file_commits(
+                file_path, limit=per_file
+            )
             for commit in commits:
                 if commit['sha'] not in seen_shas:
                     seen_shas.add(commit['sha'])

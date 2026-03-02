@@ -6,9 +6,11 @@ CREATE TABLE IF NOT EXISTS embeddings (
     id INT AUTO_INCREMENT PRIMARY KEY,
     source_type ENUM('item', 'decision', 'update') NOT NULL,
     source_id INT NOT NULL,
-    content_hash CHAR(32) NOT NULL,           -- MD5 of embedded text
+    -- MD5 of embedded text
+    content_hash CHAR(32) NOT NULL,
     model VARCHAR(50) NOT NULL DEFAULT 'nomic-embed-text-v1.5',
-    vector BLOB NOT NULL,                      -- packed float32 (768 * 4 = 3072 bytes)
+    -- packed float32 vector (768 * 4 = 3072 bytes)
+    vector BLOB NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE KEY uq_source_model (source_type, source_id, model),
