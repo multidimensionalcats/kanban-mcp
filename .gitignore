@@ -7,3 +7,4 @@ venv/
 .venv/
 models/
 .env
+kanban_mcp.egg-info/

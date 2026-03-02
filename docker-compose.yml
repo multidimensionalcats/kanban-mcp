@@ -10,7 +10,7 @@ services:
       MYSQL_PASSWORD: changeme
     volumes:
       - kanban_data:/var/lib/mysql
-      - ./migrations:/docker-entrypoint-initdb.d
+      - ./kanban_mcp/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: mysqladmin ping -h localhost
       interval: 5s

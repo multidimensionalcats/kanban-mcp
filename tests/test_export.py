@@ -8,11 +8,7 @@ import pytest
 from datetime import datetime
 from unittest.mock import Mock, MagicMock
 
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from kanban_export import (
+from kanban_mcp.export import (
     ExportBuilder,
     format_json,
     format_yaml,
@@ -280,15 +276,15 @@ class TestFormatters:
 
     def test_format_yaml_missing_pyyaml(self):
         """Test YAML format raises ImportError when pyyaml missing."""
-        import kanban_export
-        original = kanban_export.YAML_AVAILABLE
-        kanban_export.YAML_AVAILABLE = False
+        from kanban_mcp import export as export_module
+        original = export_module.YAML_AVAILABLE
+        export_module.YAML_AVAILABLE = False
 
         try:
             with pytest.raises(ImportError, match="pyyaml"):
                 format_yaml(self.sample_data)
         finally:
-            kanban_export.YAML_AVAILABLE = original
+            export_module.YAML_AVAILABLE = original
 
     def test_format_markdown_summary(self):
         """Test Markdown summary format."""

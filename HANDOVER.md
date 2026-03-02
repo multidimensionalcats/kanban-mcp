@@ -1,41 +1,68 @@
 # HANDOVER
 
-## Last Session (2026-02-22)
+## Last Session (2026-02-25)
 
 ### Completed
-**Fixed all 15 audit issues (#8219-#8233)** from the codebase audit (#7539):
 
-1. **Migration 004** — Added ON DELETE CASCADE to items.project_id and updates.project_id FKs. Indexes on item_relationships(target_item_id) and update_items(item_id) already existed.
-2. **Credential hardening (#8219)** — Removed hardcoded DB defaults; raises ValueError listing missing env vars. Added dotenv loading from .env file.
-3. **Embedding logging (#8224)** — Extracted `_safe_embedding_op()` helper replacing 6 bare try/except blocks with debug-level logging.
-4. **Pool exhaustion (#8223)** — Extracted `_rebuild_source_type()` helper that fetches IDs then closes cursor before processing.
-5. **Cursor leaks (#8222)** — Replaced all 5 `_get_connection()` calls in kanban_web.py with `_db_cursor()` context manager.
-6. **Host warning (#8225)** — Added stderr warning when binding to 0.0.0.0 or :: (especially with debug mode).
-7. **Delete simplification** — `api_delete_project` now uses CASCADE, only manually deletes embeddings.
-8. **Timeline parsing (#8227)** — Safe GROUP_CONCAT parsing handling empty/null/whitespace/non-numeric values.
-9. **CLI validation (#8228)** — Wrapped int() parsing in try/except with clear error message.
-10. **Null check (#8229)** — Added defensive null check in `_get_next_tag_color`.
-11. **Dead code (#8231)** — Removed unused `escapeHtml()` from app.js.
-12. **Migration comments (#8232)** — Fixed hardcoded credentials in migration file comments.
-13. **Test assertions (#8233)** — Strengthened web update tests to verify DB persistence.
-14. **Test cleanup (#8226)** — Fixed cleanup_test_project to delete item_relationships and use _db_cursor.
-15. **Test pool exhaustion fix** — Moved KanbanDB/KanbanMCPServer creation to setUpClass, added env-configurable pool_size, unique pool names per instance. Tests went from 201 pass/46 error to 361 pass/0 error.
+**`kanban-setup` console script (#7538)** — Cross-platform Python DB setup replacing shell scripts as the primary install path for pip users:
+- Created `kanban_mcp/setup.py` — interactive mode (prompts) and `--auto` mode (env vars / CLI args / defaults)
+- Connects as MySQL root, creates DB + user + grants, runs all migrations via `cursor.execute(sql, multi=True)`, writes `.env`, prints MCP config JSON
+- CLI args: `--auto`, `--with-semantic`, `--db-name`, `--db-user`, `--db-password`, `--db-host`, `--mysql-root-user`, `--mysql-root-password`
+- Added `kanban-setup` entry point in `pyproject.toml`
+- Created `tests/test_setup.py` — 17 unit tests (arg parsing, password gen, migration discovery, .env writing, config resolution)
+- Updated README.md: Quick Start, Database Setup, AI Agent Install Guide, Entry Points table all use `kanban-setup` as canonical path. Shell scripts demoted to "Alternative: from source" section.
+- `install.sh` / `install.ps1` kept in repo for source installs
 
-Also added: tests/conftest.py (test env config), .env file support via python-dotenv.
+**parent_id epic-only bug fix (planned)** — Plan written at `.claude/plans/peaceful-swimming-spindle.md`. `set_parent()` already enforces epic-only parents but `create_item()` does not. One-line fix + test update. **Execute this plan before doing anything else next session.**
+
+### Decisions Made This Session
+- **Run tests under python3.13**, not 3.14. Live deployment uses 3.13, onnxruntime is installed there. 3.14 lacks onnxruntime ebuild on Gentoo. All 405 tests pass with 0 skips under 3.13.
+- **No venv needed** — project runs against system python. The `.venv/` directory in the repo is vestigial and can be deleted.
+- **`--break-system-packages` was used incorrectly** — an editable install was put into `~/.local/lib/python3.14/`. Should be cleaned up (`pip3.14 uninstall kanban-mcp`).
+- **Shell scripts stay** — `install.sh` and `install.ps1` remain for from-source users but are no longer the primary path.
+
+### Environment State (messy, needs cleanup)
+- **Live deployment**: `~/kanban_mcp/` — old flat-file layout, runs under python3.13, has onnxruntime. MCP server processes are running from here.
+- **Dev tree**: `./kanban_mcp/` — the packaged version. Editable-installed into python3.14 system site-packages via `--break-system-packages`.
+- **System python3.14**: has kanban-mcp editable install in `~/.local/lib/python3.14/`. Missing onnxruntime.
+- **System python3.13**: has onnxruntime. Tests should run under this.
+- **`.venv/`**: exists but empty/unused. Should be deleted.
+
+### Current Branch State
+- `rebase-clean` — 7 clean commits + uncommitted work from this session
+- `master` — old 41-commit history (will be replaced)
+- `backup-pre-rebase` — safety copy of old master
 
 ### Test Results
-- 361 passed, 0 failed, 0 errors (excluding optional onnxruntime-dependent embedding tests)
-- 17 embedding test failures are from missing onnxruntime in dev environment (optional dependency)
+- 405 passed, 0 skipped under python3.13 (`python3.13 -m pytest tests/ -v`)
 
 ## Next Session
 
-**Test Docker setup (#7535)** — Docker files were created in a previous session but never tested. Need a Docker-capable environment to:
-- `docker compose up -d` and verify MySQL + web UI start
-- Verify migrations run on first start
-- Test MCP server connectivity from Docker
-- Fix any issues found
+### Primary: PyPI publish and v0.1.0 tag
 
-### Remaining open-source epic (#7532) children after audit:
-- #7535 Docker and docker-compose setup (untested)
-- #7538 Manual install documentation
-- #7537 pip packaging with pyproject.toml
+Presuming parent_id fix is already committed:
+
+1. **Final pre-publish checks**:
+   - `python3.13 -m pytest tests/` — all 405+ tests pass
+   - `python3.13 -m build` — produces dist/
+   - Verify README renders correctly on PyPI (use `twine check dist/*`)
+
+2. **Publish to PyPI**:
+   - `pip install build twine`
+   - `python3.13 -m build`
+   - `twine upload dist/*` (user has PyPI account created)
+
+3. **Replace master with rebase-clean**:
+   - Tag `v0.1.0` on rebase-clean
+   - Force-push to main/master
+
+4. **Clean up dev environment** (optional):
+   - `pip3.14 uninstall kanban-mcp` to remove the --break-system-packages mess
+   - Delete `.venv/`
+
+### Blocked: Docker testing (#7535)
+User is recompiling Gentoo kernel with Docker-required CONFIG options. Docker compose setup exists but is untested.
+
+### Remaining open-source epic (#7532) children:
+- #7535 Docker and docker-compose setup (blocked on kernel recompile)
+- #7538 Manual install documentation (in_progress — kanban-setup done, README updated)

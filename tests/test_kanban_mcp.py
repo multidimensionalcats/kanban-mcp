@@ -12,8 +12,6 @@ from pathlib import Path
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-# Import from kanban module (will exist after implementation)
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def cleanup_test_project(db, project_path):
@@ -41,9 +39,9 @@ class TestKanbanDB(unittest.TestCase):
     
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         """Set up test database connection."""
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         # Use a test project path
         cls.test_project_path = "/tmp/test-kanban-project"
@@ -391,7 +389,7 @@ class TestKanbanMCPServerState(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -436,7 +434,7 @@ class TestJSONRPCProtocol(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -527,7 +525,7 @@ class TestGetTodos(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -571,7 +569,7 @@ class TestConnectionPooling(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-pool"
 
@@ -612,7 +610,7 @@ class TestConnectionPooling(unittest.TestCase):
     
     def test_pool_size_configurable(self):
         """Pool size should be configurable at init."""
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         db = KanbanDB(pool_size=3)
         self.assertEqual(db._pool.pool_size, 3)
         # Pool auto-manages connections, no explicit close needed
@@ -639,7 +637,7 @@ class TestRelationships(unittest.TestCase):
     
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.project_id = cls.db.hash_project_path('/tmp/test_relationships')
         # Create project
@@ -768,13 +766,13 @@ class TestUpdateItem(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-update-item"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
         # Create a test item
@@ -863,7 +861,7 @@ class TestEditItemTool(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -915,13 +913,13 @@ class TestStatusHistory(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-status-history"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -1069,7 +1067,7 @@ class TestStatusHistoryMCPTool(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -1105,13 +1103,13 @@ class TestComplexity(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-complexity"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -1190,13 +1188,13 @@ class TestItemMetrics(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-metrics"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -1268,7 +1266,7 @@ class TestComplexityMCPTools(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -1328,13 +1326,13 @@ class TestTags(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-tags"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -1499,13 +1497,13 @@ class TestItemTags(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-item-tags"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
         # Create test item
@@ -1671,13 +1669,13 @@ class TestListItemsWithTags(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-list-items-tags"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -1812,7 +1810,7 @@ class TestTagMCPTools(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -1956,13 +1954,13 @@ class TestEpicSupport(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-epic-support"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -2484,7 +2482,7 @@ class TestEpicMCPTools(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -2602,13 +2600,13 @@ class TestSearch(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-search"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -2729,7 +2727,7 @@ class TestSearchMCPTool(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -2776,13 +2774,13 @@ class TestFileLinks(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-file-links"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
         # Create test item
@@ -2938,7 +2936,7 @@ class TestFileLinksMCPTools(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -3037,13 +3035,13 @@ class TestQuestionType(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-question-type"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
 
@@ -3197,7 +3195,7 @@ class TestQuestionTypeMCPTools(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -3259,13 +3257,13 @@ class TestDecisions(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-decisions"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
 
     def setUp(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cleanup_test_project(self.db, self.test_project_path)
         self.db.ensure_project(self.test_project_path)
         self.item_id = self.db.create_item(self.test_project_id, "issue", "Test Issue")
@@ -3392,7 +3390,7 @@ class TestDecisionsMCPTools(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -3507,7 +3505,7 @@ class TestEmbeddings(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_project_path = "/tmp/test-embeddings"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
@@ -3687,7 +3685,7 @@ class TestEmbeddingsMCPTools(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanMCPServer
+        from kanban_mcp.core import KanbanMCPServer
         cls.server = KanbanMCPServer()
 
     def setUp(self):
@@ -3799,7 +3797,7 @@ class TestCredentialHardening(unittest.TestCase):
                 os.environ[k] = v
 
     def test_init_no_password_raises(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         self._clear_env()
         os.environ['KANBAN_DB_USER'] = 'someuser'
         os.environ['KANBAN_DB_NAME'] = 'somedb'
@@ -3808,7 +3806,7 @@ class TestCredentialHardening(unittest.TestCase):
         self.assertIn('KANBAN_DB_PASSWORD', str(ctx.exception))
 
     def test_init_no_user_raises(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         self._clear_env()
         os.environ['KANBAN_DB_PASSWORD'] = 'somepass'
         os.environ['KANBAN_DB_NAME'] = 'somedb'
@@ -3817,7 +3815,7 @@ class TestCredentialHardening(unittest.TestCase):
         self.assertIn('KANBAN_DB_USER', str(ctx.exception))
 
     def test_init_no_dbname_raises(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         self._clear_env()
         os.environ['KANBAN_DB_USER'] = 'someuser'
         os.environ['KANBAN_DB_PASSWORD'] = 'somepass'
@@ -3826,7 +3824,7 @@ class TestCredentialHardening(unittest.TestCase):
         self.assertIn('KANBAN_DB_NAME', str(ctx.exception))
 
     def test_init_empty_string_password_raises(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         self._clear_env()
         os.environ['KANBAN_DB_USER'] = 'someuser'
         os.environ['KANBAN_DB_PASSWORD'] = ''
@@ -3836,7 +3834,7 @@ class TestCredentialHardening(unittest.TestCase):
         self.assertIn('KANBAN_DB_PASSWORD', str(ctx.exception))
 
     def test_init_constructor_params_override_env(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         self._clear_env()
         # Pass valid params directly — should not raise even without env vars
         db = KanbanDB(user='claude', password='claude_code_password', database='claude_code_kanban')
@@ -3844,7 +3842,7 @@ class TestCredentialHardening(unittest.TestCase):
         self.assertEqual(db.config['database'], 'claude_code_kanban')
 
     def test_init_error_message_lists_missing_vars(self):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         self._clear_env()
         with self.assertRaises(ValueError) as ctx:
             KanbanDB()
@@ -3859,7 +3857,7 @@ class TestCascadeDelete(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
 
     def setUp(self):
@@ -3928,7 +3926,7 @@ class TestIndexExistence(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
 
     def _get_index_columns(self, table):
@@ -3951,7 +3949,7 @@ class TestEmbeddingFailureLogging(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_path = "/tmp/test-embedding-logging"
 
@@ -3997,7 +3995,7 @@ class TestCleanupTestProject(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_path = "/tmp/test-cleanup-project"
 
@@ -4032,7 +4030,7 @@ class TestTagColorNullCheck(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         cls.db = KanbanDB()
         cls.test_path = "/tmp/test-tag-color-project"
 
@@ -4062,7 +4060,7 @@ class TestTimelineParsing(unittest.TestCase):
     """Tests for #8227 — GROUP_CONCAT parsing safety."""
 
     def setUp(self):
-        from timeline_builder import TimelineBuilder
+        from kanban_mcp.timeline_builder import TimelineBuilder
         self.builder = TimelineBuilder(db=MagicMock())
 
     def _make_update(self, linked_items=None, item_id=None):
@@ -4112,12 +4110,12 @@ class TestCLIInputValidation(unittest.TestCase):
     """Tests for #8228 — CLI export item_ids validation."""
 
     def setUp(self):
-        from kanban_cli import export_data
+        from kanban_mcp.cli import export_data
         self.export_data = export_data
 
     def _call_export(self, item_ids_str):
         """Call export_data with test item_ids and return result."""
-        from kanban_mcp import KanbanDB
+        from kanban_mcp.core import KanbanDB
         db = KanbanDB()
         return self.export_data(
             db,

@@ -19,28 +19,20 @@ class TestDockerfile(unittest.TestCase):
     def test_base_image(self):
         assert "python:3.13-slim" in self.content
 
-    def test_installs_core_deps(self):
-        for dep in ["mysql-connector-python", "flask", "pyyaml", "GitPython"]:
-            assert dep in self.content, f"Missing dependency: {dep}"
+    def test_copies_package(self):
+        assert "kanban_mcp/" in self.content, "Should COPY kanban_mcp/ package"
 
-    def test_no_semantic_search_deps(self):
-        for dep in ["onnxruntime", "numpy", "tokenizers"]:
-            assert dep not in self.content, f"Should not include {dep} in web-only container"
+    def test_copies_pyproject(self):
+        assert "pyproject.toml" in self.content, "Should COPY pyproject.toml"
 
-    def test_copies_required_files(self):
-        for f in ["kanban_web.py", "kanban_mcp.py", "kanban_export.py",
-                   "git_timeline.py", "timeline_builder.py"]:
-            assert f in self.content, f"Missing COPY for {f}"
-
-    def test_copies_templates_and_static(self):
-        assert "templates/" in self.content
-        assert "static/" in self.content
+    def test_pip_installs_package(self):
+        assert "pip install" in self.content
 
     def test_exposes_port_5000(self):
         assert "EXPOSE 5000" in self.content
 
     def test_cmd_runs_web_ui(self):
-        assert "kanban_web.py" in self.content
+        assert "kanban-web" in self.content
         assert "0.0.0.0" in self.content
 
 

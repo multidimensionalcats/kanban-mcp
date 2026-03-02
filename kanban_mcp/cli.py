@@ -9,9 +9,8 @@ import json
 import sys
 from pathlib import Path
 
-# Import shared database class
-from kanban_mcp import KanbanDB
-from kanban_export import ExportBuilder, export_to_format
+from kanban_mcp.core import KanbanDB
+from kanban_mcp.export import ExportBuilder, export_to_format
 
 
 def get_active_items(db: KanbanDB, project_path: str, format: str = "text") -> str:

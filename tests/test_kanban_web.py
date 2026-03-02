@@ -8,10 +8,7 @@ import io
 import sys
 import json
 import unittest
-from pathlib import Path
 from unittest.mock import patch
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tests.test_kanban_mcp import cleanup_test_project
 
@@ -21,8 +18,8 @@ class TestKanbanWebAPI(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
-        from kanban_web import app
+        from kanban_mcp.core import KanbanDB
+        from kanban_mcp.web import app
 
         cls.db = KanbanDB()
         cls.app = app
@@ -287,8 +284,8 @@ class TestConnectionLeaks(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from kanban_mcp import KanbanDB
-        from kanban_web import app
+        from kanban_mcp.core import KanbanDB
+        from kanban_mcp.web import app
 
         cls.db = KanbanDB()
         cls.app = app

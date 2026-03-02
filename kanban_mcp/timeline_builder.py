@@ -9,8 +9,8 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from kanban_mcp import KanbanDB
-    from git_timeline import GitTimelineProvider
+    from kanban_mcp.core import KanbanDB
+    from kanban_mcp.git_timeline import GitTimelineProvider
 
 logger = logging.getLogger(__name__)
 

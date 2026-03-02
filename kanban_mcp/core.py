@@ -20,9 +20,12 @@ from contextlib import contextmanager
 import mysql.connector
 from mysql.connector import Error
 from mysql.connector.pooling import MySQLConnectionPool
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
-from kanban_export import ExportBuilder, export_to_format
+from kanban_mcp.export import ExportBuilder, export_to_format
 
 # Load .env file if present (looks in CWD and script directory)
 try:
@@ -2121,8 +2124,8 @@ class KanbanDB:
         Returns:
             Dict with success, entries list, and entry_count
         """
-        from timeline_builder import TimelineBuilder
-        from git_timeline import GitTimelineProvider
+        from kanban_mcp.timeline_builder import TimelineBuilder
+        from kanban_mcp.git_timeline import GitTimelineProvider
 
         # Initialize git provider if repo path provided
         git_provider = None
@@ -2582,7 +2585,7 @@ class KanbanMCPServer:
             Returns:
                 Dict with success, format, content, and item_count
             """
-            from kanban_export import get_file_extension
+            from kanban_mcp.export import get_file_extension
             import tempfile
 
             project_id = self._get_project_id()

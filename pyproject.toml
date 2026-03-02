@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kanban-mcp"
+version = "0.1.0"
+description = "Kanban board MCP server for Claude Code — track issues, features, and todos"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{name = "multidimensionalcats"}]
+keywords = ["kanban", "mcp", "claude", "project-management"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Bug Tracking",
+    "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+    "mysql-connector-python>=8.0.0",
+    "pyyaml>=6.0",
+    "flask>=2.0.0",
+    "GitPython>=3.1.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+semantic = [
+    "numpy>=1.24.0",
+    "onnxruntime>=1.16.0",
+    "tokenizers>=0.15.0",
+    "huggingface_hub>=0.19.0",
+]
+dev = [
+    "pytest>=7.0.0",
+]
+
+[project.scripts]
+kanban-mcp = "kanban_mcp.core:main"
+kanban-web = "kanban_mcp.web:main"
+kanban-cli = "kanban_mcp.cli:main"
+kanban-setup = "kanban_mcp.setup:main"
+
+[project.urls]
+Homepage = "https://github.com/multidimensionalcats/kanban-mcp"
+Repository = "https://github.com/multidimensionalcats/kanban-mcp"
+Issues = "https://github.com/multidimensionalcats/kanban-mcp/issues"
+
+[tool.setuptools.packages.find]
+include = ["kanban_mcp*"]
+
+[tool.setuptools.package-data]
+kanban_mcp = [
+    "templates/*.html",
+    "static/*.js",
+    "static/*.css",
+    "migrations/*.sql",
+    "hooks/*.py",
+]

@@ -2,14 +2,10 @@
 """Simple web UI for kanban-mcp."""
 
 import sys
-from pathlib import Path
-
-# Add parent to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
 
 from flask import Flask, render_template, request, jsonify, Response
-from kanban_mcp import KanbanDB
-from kanban_export import ExportBuilder, export_to_format, get_mime_type, get_file_extension
+from kanban_mcp.core import KanbanDB
+from kanban_mcp.export import ExportBuilder, export_to_format, get_mime_type, get_file_extension
 
 app = Flask(__name__)
 db = KanbanDB()
@@ -760,14 +756,15 @@ def index():
         epic_progress=epic_progress
     )
 
-if __name__ == '__main__':
+def main():
+    """Main entry point for kanban-web console script."""
     import argparse
     parser = argparse.ArgumentParser(description='Kanban web UI')
     parser.add_argument('--port', '-p', type=int, default=5000, help='Port to run on')
     parser.add_argument('--host', '-H', default='127.0.0.1', help='Host to bind to')
     parser.add_argument('--debug', '-d', action='store_true', help='Debug mode')
     args = parser.parse_args()
-    
+
     if args.host in ('0.0.0.0', '::'):
         print(
             f"WARNING: Binding to {args.host} exposes this server to the network. "
@@ -783,3 +780,7 @@ if __name__ == '__main__':
 
     print(f"Starting kanban web UI on http://{args.host}:{args.port}")
     app.run(host=args.host, port=args.port, debug=args.debug)
+
+
+if __name__ == '__main__':
+    main()

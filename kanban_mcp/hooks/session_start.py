@@ -7,13 +7,8 @@ Injects active items context at the start of a session.
 import json
 import os
 import sys
-from pathlib import Path
 
-# Add kanban module to path
-KANBAN_DIR = Path(__file__).parent.parent
-sys.path.insert(0, str(KANBAN_DIR))
-
-from kanban_mcp import KanbanDB
+from kanban_mcp.core import KanbanDB
 
 
 def main():
