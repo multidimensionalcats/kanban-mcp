@@ -1311,33 +1311,6 @@ async function deleteProject() {
     }
 }
 
-// --- Filter Updates ---
-function filterUpdates(query) {
-    const q = query.toLowerCase().trim();
-    const groups = document.querySelectorAll('.update-group');
-
-    groups.forEach(group => {
-        const itemId = group.dataset.itemId || '';
-        const itemTitle = (group.dataset.itemTitle || '').toLowerCase();
-        const updates = group.querySelectorAll('.update-item');
-        let hasVisibleUpdate = false;
-
-        updates.forEach(update => {
-            const content = update.dataset.content || '';
-            const matches = q === '' ||
-                itemId.includes(q) ||
-                ('#' + itemId).includes(q) ||
-                itemTitle.includes(q) ||
-                content.includes(q);
-
-            update.classList.toggle('hidden', !matches);
-            if (matches) hasVisibleUpdate = true;
-        });
-
-        group.classList.toggle('hidden', !hasVisibleUpdate);
-    });
-}
-
 // --- Drag and Drop (wrapper for tested module) ---
 // The drag-drop logic is in /static/dragdrop.js - we wrap it here to provide showToast
 async function handleDropWrapper(e) {
@@ -1790,9 +1763,6 @@ if (typeof module !== 'undefined' && module.exports) {
         // Project operations
         confirmDeleteProject,
         deleteProject,
-
-        // Filter
-        filterUpdates,
 
         // Drag and drop
         handleDropWrapper,

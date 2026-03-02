@@ -218,55 +218,15 @@
         <button class="fab small" onclick="openUpdateModal()" title="New Update">
             <i class="material-icons">add_comment</i>
         </button>
-        <button class="fab" onclick="document.querySelector('.updates-drawer').classList.toggle('open')" title="View Updates">
-            <i class="material-icons">history</i>
-        </button>
-        <button class="fab secondary" onclick="openTimelineDrawer()" title="View Timeline">
+        <button class="fab" onclick="openTimelineDrawer()" title="Activity">
             <i class="material-icons">timeline</i>
         </button>
     </div>
 
-    <!-- Updates Sidebar -->
-    <aside class="updates-drawer">
-        <div class="drawer-header">
-            <span class="drawer-title">Recent Updates</span>
-            <button class="close-btn" onclick="document.querySelector('.updates-drawer').classList.remove('open')">
-                <i class="material-icons">close</i>
-            </button>
-        </div>
-        <div class="search-input-wrapper">
-            <i class="material-icons">search</i>
-            <input type="text" class="search-input" id="updates-search" placeholder="Search updates..." oninput="filterUpdates(this.value)">
-        </div>
-        <div class="drawer-content" id="updates-content">
-            {% for item_id, group in updates_by_item.items() %}
-            <div class="update-group" data-item-id="{{ item_id }}" data-item-title="{{ group.item.title if group.item else 'General' }}">
-                <div class="update-group-header{% if not group.item %} general{% endif %}">
-                    {% if group.item %}
-                    <i class="material-icons">label</i>
-                    <span>#{{ group.item.id }} {{ group.item.title }}</span>
-                    {% else %}
-                    <i class="material-icons">notes</i>
-                    <span>General</span>
-                    {% endif %}
-                </div>
-                {% for update in group.updates %}
-                <div class="update-item" data-content="{{ update.content|lower }}">
-                    <div class="update-meta">{{ update.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
-                    <div class="update-text">{{ update.content }}</div>
-                </div>
-                {% endfor %}
-            </div>
-            {% else %}
-                <div class="empty-state">No updates yet</div>
-            {% endfor %}
-        </div>
-    </aside>
-
-    <!-- Timeline Sidebar -->
+    <!-- Activity Sidebar -->
     <aside class="timeline-drawer" id="timeline-drawer">
         <div class="drawer-header">
-            <span class="drawer-title">Activity Timeline</span>
+            <span class="drawer-title">Activity</span>
             <button class="close-btn" onclick="closeTimelineDrawer()">
                 <i class="material-icons">close</i>
             </button>
@@ -302,6 +262,29 @@
                 <span class="filter-dot commit"></span>
                 Commits
             </label>
+        </div>
+        <div class="activity-new-update" id="activity-new-update" style="display: none;">
+            <div class="activity-new-update-form">
+                <textarea id="activity-update-content" class="form-textarea" placeholder="Write an update..." rows="3"></textarea>
+                <div class="activity-update-controls">
+                    <select id="activity-update-items" class="form-input" multiple title="Link to items (optional)">
+                    </select>
+                    <div class="activity-update-actions">
+                        <button class="btn btn-text" onclick="toggleActivityNewUpdate()">Cancel</button>
+                        <button class="btn btn-primary" onclick="createActivityUpdate()">Post</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="activity-new-update-toggle">
+            <button class="btn btn-text" onclick="toggleActivityNewUpdate()" title="Write an update">
+                <i class="material-icons">add_comment</i>
+                New Update
+            </button>
+        </div>
+        <div class="search-input-wrapper">
+            <i class="material-icons">search</i>
+            <input type="text" class="search-input" id="activity-search" placeholder="Search activity..." oninput="filterActivityEntries(this.value)">
         </div>
         <div class="drawer-content" id="timeline-content">
             <div class="timeline-loading" id="timeline-loading" style="display: none;">

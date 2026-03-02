@@ -6,7 +6,7 @@ Tests for kanban_export module.
 import json
 import pytest
 from datetime import datetime
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 
 from kanban_mcp.export import (
     ExportBuilder,
@@ -83,7 +83,7 @@ class TestExportBuilder:
         self.mock_db.get_item_tags.return_value = []
 
         builder = ExportBuilder(self.mock_db, self.project_id)
-        data = builder.build_export_data(item_type='feature')
+        builder.build_export_data(item_type='feature')
 
         self.mock_db.list_items.assert_called_once()
         call_kwargs = self.mock_db.list_items.call_args[1]
@@ -91,7 +91,10 @@ class TestExportBuilder:
 
     def test_build_export_data_with_item_ids(self):
         """Test export with specific item IDs."""
-        self.mock_db.get_item.side_effect = lambda id: self.sample_items[0] if id == 1 else None
+        self.mock_db.get_item.side_effect = (
+            lambda id: self.sample_items[0]
+            if id == 1 else None
+        )
         self.mock_db.get_item_tags.return_value = []
 
         builder = ExportBuilder(self.mock_db, self.project_id)
@@ -130,7 +133,10 @@ class TestExportBuilder:
         }
 
         builder = ExportBuilder(self.mock_db, self.project_id)
-        data = builder.build_export_data(include_tags=False, include_relationships=True)
+        data = builder.build_export_data(
+            include_tags=False,
+            include_relationships=True
+        )
 
         assert 'relationships' in data['items'][0]
         assert len(data['items'][0]['relationships']['outgoing']) == 1
@@ -142,13 +148,18 @@ class TestExportBuilder:
         self.mock_db.get_item_metrics.return_value = {
             'lead_time': 77.0,
             'cycle_time': 48.0,
-            'time_in_each_status': {'in_progress': 24.0, 'review': 24.0, 'done': 29.0},
+            'time_in_each_status': {
+                'in_progress': 24.0,
+                'review': 24.0, 'done': 29.0
+            },
             'revert_count': 0,
             'current_age': 77.0
         }
 
         builder = ExportBuilder(self.mock_db, self.project_id)
-        data = builder.build_export_data(include_tags=False, include_metrics=True)
+        data = builder.build_export_data(
+            include_tags=False, include_metrics=True
+        )
 
         assert 'metrics' in data['items'][0]
         assert data['items'][0]['metrics']['lead_time'] == 77.0
@@ -196,7 +207,10 @@ class TestExportBuilder:
         }
 
         builder = ExportBuilder(self.mock_db, self.project_id)
-        data = builder.build_export_data(include_tags=False, include_epic_progress=True)
+        data = builder.build_export_data(
+            include_tags=False,
+            include_epic_progress=True
+        )
 
         assert 'epic_progress' in data['items'][0]
         assert data['items'][0]['epic_progress']['percent'] == 60.0
@@ -435,12 +449,19 @@ class TestMarkdownEdgeCases:
                     'tags': []
                 }
             ],
-            'summary': {'total_items': 1, 'by_type': {'feature': 1}, 'by_status': {'todo': 1}}
+            'summary': {
+                'total_items': 1,
+                'by_type': {'feature': 1},
+                'by_status': {'todo': 1}
+            }
         }
 
         result = format_markdown(data)
         # Pipes should be escaped in table
-        assert '\\|' in result or 'Feature | with | pipes' in result
+        assert (
+            '\\|' in result
+            or 'Feature | with | pipes' in result
+        )
 
     def test_long_title_truncation(self):
         """Test long titles are truncated in tables."""
@@ -458,7 +479,11 @@ class TestMarkdownEdgeCases:
                     'tags': []
                 }
             ],
-            'summary': {'total_items': 1, 'by_type': {'feature': 1}, 'by_status': {'todo': 1}}
+            'summary': {
+                'total_items': 1,
+                'by_type': {'feature': 1},
+                'by_status': {'todo': 1}
+            }
         }
 
         result = format_markdown(data, detailed=False)

@@ -5,7 +5,12 @@ import sys
 
 from flask import Flask, render_template, request, jsonify, Response
 from kanban_mcp.core import KanbanDB
-from kanban_mcp.export import ExportBuilder, export_to_format, get_mime_type, get_file_extension
+from kanban_mcp.export import (
+    ExportBuilder,
+    export_to_format,
+    get_mime_type,
+    get_file_extension,
+)
 
 app = Flask(__name__)
 db = None
@@ -91,7 +96,13 @@ def api_edit_item(item_id):
 
     # Handle parent_id change separately
     if 'parent_id' in data:
-        parent_result = db.set_parent(item_id, data['parent_id'] if data['parent_id'] else None)
+        parent_val = (
+            data['parent_id'] if data['parent_id']
+            else None
+        )
+        parent_result = db.set_parent(
+            item_id, parent_val
+        )
         if not parent_result.get('success'):
             return jsonify(parent_result), 400
 
@@ -145,7 +156,10 @@ def api_export():
     # Get format
     format_type = request.args.get('format', 'json').lower()
     if format_type not in ('json', 'yaml', 'markdown', 'md'):
-        return jsonify({'error': 'Invalid format. Use json, yaml, or markdown'}), 400
+        return jsonify({
+            'error': 'Invalid format.'
+            ' Use json, yaml, or markdown'
+        }), 400
 
     # Parse filter parameters
     item_type = request.args.get('type', '') or None
@@ -156,7 +170,11 @@ def api_export():
     item_ids = None
     if ids_param:
         try:
-            item_ids = [int(x.strip()) for x in ids_param.split(',') if x.strip()]
+            item_ids = [
+                int(x.strip())
+                for x in ids_param.split(',')
+                if x.strip()
+            ]
         except ValueError:
             return jsonify({'error': 'Invalid item IDs'}), 400
 
@@ -211,9 +229,14 @@ def api_export():
             project = db.get_project_by_id(project_id)
             project_name = project['name'] if project else 'export'
             # Sanitize filename
-            safe_name = ''.join(c for c in project_name if c.isalnum() or c in '-_')[:50]
+            safe_name = ''.join(
+                c for c in project_name
+                if c.isalnum() or c in '-_'
+            )[:50]
             ext = get_file_extension(format_type)
-            response.headers['Content-Disposition'] = f'attachment; filename="{safe_name}{ext}"'
+            response.headers['Content-Disposition'] = (
+                f'attachment; filename="{safe_name}{ext}"'
+            )
 
         return response
 
@@ -237,11 +260,23 @@ def api_create_item():
     parent_id = data.get('parent_id')
 
     if not project_id or not item_type or not title:
-        return jsonify({'success': False, 'error': 'project_id, type, and title required'}), 400
+        return jsonify({
+            'success': False,
+            'error': (
+                'project_id, type,'
+                ' and title required'
+            ),
+        }), 400
 
     try:
-        item_id = db.create_item(project_id, item_type, title, description, priority, complexity, parent_id=parent_id)
-        return jsonify({'success': True, 'item_id': item_id}), 201
+        item_id = db.create_item(
+            project_id, item_type, title,
+            description, priority, complexity,
+            parent_id=parent_id,
+        )
+        return jsonify({
+            'success': True, 'item_id': item_id
+        }), 201
     except ValueError as e:
         return jsonify({'success': False, 'error': str(e)}), 400
 
@@ -281,7 +316,10 @@ def api_create_update():
     if not content:
         return jsonify({'success': False, 'error': 'content required'}), 400
 
-    update_id = db.add_update(project_id, content, item_ids if item_ids else None)
+    update_id = db.add_update(
+        project_id, content,
+        item_ids if item_ids else None,
+    )
     return jsonify({'success': True, 'update_id': update_id}), 201
 
 
@@ -292,7 +330,10 @@ def api_delete_project(project_id):
         # Check project exists
         cursor.execute("SELECT id FROM projects WHERE id = %s", (project_id,))
         if not cursor.fetchone():
-            return jsonify({'success': False, 'error': 'Project not found'}), 404
+            return jsonify({
+                'success': False,
+                'error': 'Project not found',
+            }), 404
 
         # Clean up embeddings (no FK to projects, must delete manually)
         cursor.execute("""
@@ -300,8 +341,15 @@ def api_delete_project(project_id):
             AND source_id IN (SELECT id FROM items WHERE project_id = %s)
         """, (project_id,))
         cursor.execute("""
-            DELETE FROM embeddings WHERE source_type = 'decision'
-            AND source_id IN (SELECT id FROM item_decisions WHERE item_id IN (SELECT id FROM items WHERE project_id = %s))
+            DELETE FROM embeddings
+            WHERE source_type = 'decision'
+            AND source_id IN (
+                SELECT id FROM item_decisions
+                WHERE item_id IN (
+                    SELECT id FROM items
+                    WHERE project_id = %s
+                )
+            )
         """, (project_id,))
         cursor.execute("""
             DELETE FROM embeddings WHERE source_type = 'update'
@@ -335,7 +383,10 @@ def api_create_tag():
     color = data.get('color')
 
     if not project_id or not name:
-        return jsonify({'success': False, 'error': 'project_id and name required'}), 400
+        return jsonify({
+            'success': False,
+            'error': 'project_id and name required',
+        }), 400
 
     try:
         tag_id = db.ensure_tag(project_id, name, color)
@@ -371,7 +422,14 @@ def api_list_epics():
         return jsonify({'epics': []})
 
     items = db.list_items(project_id=project_id, type_name='epic', limit=100)
-    epics = [{'id': item['id'], 'title': item['title'], 'status': item['status_name']} for item in items]
+    epics = [
+        {
+            'id': item['id'],
+            'title': item['title'],
+            'status': item['status_name'],
+        }
+        for item in items
+    ]
     return jsonify({'epics': epics})
 
 
@@ -411,7 +469,8 @@ def api_semantic_search():
         project: Project ID (required)
         q: Search query (required)
         limit: Max results (default: 10)
-        types: Comma-separated source types to search (item,decision,update). Empty = all
+        types: Comma-separated source types
+            (item,decision,update). Empty = all
         threshold: Minimum similarity 0.0-1.0 (default: 0.0)
     """
     project_id = request.args.get('project', '')
@@ -435,7 +494,15 @@ def api_semantic_search():
         threshold = 0.0
 
     types_param = request.args.get('types', '')
-    source_types = [t.strip() for t in types_param.split(',') if t.strip()] if types_param else None
+    source_types = (
+        [
+            t.strip()
+            for t in types_param.split(',')
+            if t.strip()
+        ]
+        if types_param
+        else None
+    )
 
     try:
         results = db.semantic_search(
@@ -477,7 +544,11 @@ def api_add_item_tags(item_id):
         except ValueError as e:
             return jsonify({'success': False, 'error': str(e)}), 400
 
-    return jsonify({'success': True, 'results': results, 'tags': db.get_item_tags(item_id)})
+    return jsonify({
+        'success': True,
+        'results': results,
+        'tags': db.get_item_tags(item_id),
+    })
 
 
 @app.route('/api/items/<int:item_id>/tags/<int:tag_id>', methods=['DELETE'])
@@ -552,7 +623,10 @@ def api_add_decision(item_id):
         return jsonify({'success': False, 'error': 'choice required'}), 400
 
     try:
-        result = db.add_decision(item_id, choice, rejected_alternatives, rationale)
+        result = db.add_decision(
+            item_id, choice,
+            rejected_alternatives, rationale,
+        )
         if not result.get('success'):
             return jsonify(result), 400
         return jsonify(result), 201
@@ -590,7 +664,10 @@ def api_get_item_timeline(item_id):
     project = db.get_project_by_id(item['project_id'])
     repo_path = project.get('directory_path') if project else None
 
-    result = db.get_timeline_data(item_id=item_id, limit=limit, repo_path=repo_path)
+    result = db.get_timeline_data(
+        item_id=item_id, limit=limit,
+        repo_path=repo_path,
+    )
     return jsonify(result)
 
 
@@ -613,11 +690,15 @@ def api_get_project_timeline(project_id):
 
     repo_path = project.get('directory_path')
 
-    result = db.get_timeline_data(project_id=project_id, limit=limit, repo_path=repo_path)
+    result = db.get_timeline_data(
+        project_id=project_id, limit=limit,
+        repo_path=repo_path,
+    )
     return jsonify(result)
 
 
 STATUSES = ['backlog', 'todo', 'in_progress', 'review', 'done', 'closed']
+
 
 def get_all_relationships(project_id):
     """Get relationships for all items in a project, organized by item."""
@@ -645,44 +726,93 @@ def get_all_relationships(project_id):
 
             # Initialize if needed
             if src_id not in relationships:
-                relationships[src_id] = {'blocked_by': [], 'blocks': [], 'depends_on': [], 'dependency_of': [], 'relates_to': [], 'duplicates': []}
+                relationships[src_id] = {
+                    'blocked_by': [],
+                    'blocks': [],
+                    'depends_on': [],
+                    'dependency_of': [],
+                    'relates_to': [],
+                    'duplicates': [],
+                }
             if tgt_id not in relationships:
-                relationships[tgt_id] = {'blocked_by': [], 'blocks': [], 'depends_on': [], 'dependency_of': [], 'relates_to': [], 'duplicates': []}
+                relationships[tgt_id] = {
+                    'blocked_by': [],
+                    'blocks': [],
+                    'depends_on': [],
+                    'dependency_of': [],
+                    'relates_to': [],
+                    'duplicates': [],
+                }
 
             if rel_type == 'blocks':
-                # source blocks target
-                relationships[src_id]['blocks'].append({'id': tgt_id, 'title': rel['target_title']})
-                relationships[tgt_id]['blocked_by'].append({
-                    'id': src_id, 'title': rel['source_title'],
-                    'status': rel['source_status']
+                relationships[src_id]['blocks'].append({
+                    'id': tgt_id,
+                    'title': rel['target_title'],
+                })
+                relationships[tgt_id][
+                    'blocked_by'
+                ].append({
+                    'id': src_id,
+                    'title': rel['source_title'],
+                    'status': rel['source_status'],
                 })
             elif rel_type == 'depends_on':
-                # source depends on target
-                relationships[src_id]['depends_on'].append({'id': tgt_id, 'title': rel['target_title']})
-                relationships[tgt_id]['dependency_of'].append({'id': src_id, 'title': rel['source_title']})
+                relationships[src_id][
+                    'depends_on'
+                ].append({
+                    'id': tgt_id,
+                    'title': rel['target_title'],
+                })
+                relationships[tgt_id][
+                    'dependency_of'
+                ].append({
+                    'id': src_id,
+                    'title': rel['source_title'],
+                })
             elif rel_type == 'relates_to':
-                # symmetric
-                relationships[src_id]['relates_to'].append({'id': tgt_id, 'title': rel['target_title']})
-                relationships[tgt_id]['relates_to'].append({'id': src_id, 'title': rel['source_title']})
+                relationships[src_id][
+                    'relates_to'
+                ].append({
+                    'id': tgt_id,
+                    'title': rel['target_title'],
+                })
+                relationships[tgt_id][
+                    'relates_to'
+                ].append({
+                    'id': src_id,
+                    'title': rel['source_title'],
+                })
             elif rel_type == 'duplicates':
-                # symmetric
-                relationships[src_id]['duplicates'].append({'id': tgt_id, 'title': rel['target_title']})
-                relationships[tgt_id]['duplicates'].append({'id': src_id, 'title': rel['source_title']})
+                relationships[src_id][
+                    'duplicates'
+                ].append({
+                    'id': tgt_id,
+                    'title': rel['target_title'],
+                })
+                relationships[tgt_id][
+                    'duplicates'
+                ].append({
+                    'id': src_id,
+                    'title': rel['source_title'],
+                })
 
     return relationships
+
 
 @app.route('/')
 def index():
     # Get all projects
     with db._db_cursor(dictionary=True) as cursor:
-        cursor.execute("SELECT id, name, directory_path FROM projects ORDER BY name")
+        cursor.execute(
+            "SELECT id, name, directory_path"
+            " FROM projects ORDER BY name"
+        )
         projects = cursor.fetchall()
-    
+
     current_project = request.args.get('project', '')
     items_by_status = {}
-    updates_by_item = {}
     relationships = {}
-    
+
     epic_progress = {}
 
     if current_project:
@@ -698,7 +828,7 @@ def index():
                 ORDER BY i.priority, i.id
             """, (current_project,))
             items = cursor.fetchall()
-            
+
             # Get tags for all items in one query
             item_ids = [item['id'] for item in items]
             item_tags = {}
@@ -710,7 +840,7 @@ def index():
                     JOIN tags t ON it.tag_id = t.id
                     WHERE it.item_id IN ({placeholders})
                     ORDER BY t.name
-                """, tuple(item_ids))
+                """, tuple(item_ids))  # nosec B608
                 for row in cursor.fetchall():
                     if row['item_id'] not in item_tags:
                         item_tags[row['item_id']] = []
@@ -729,31 +859,10 @@ def index():
 
                 # Calculate progress for epic items
                 if item['type'] == 'epic':
-                    epic_progress[item['id']] = db.get_epic_progress(item['id'])
+                    epic_progress[item['id']] = (
+                        db.get_epic_progress(item['id'])
+                    )
 
-            # Get updates with their linked items
-            cursor.execute("""
-                SELECT u.id, u.content, u.created_at, ui.item_id
-                FROM updates u
-                LEFT JOIN update_items ui ON u.id = ui.update_id
-                WHERE u.project_id = %s
-                ORDER BY u.created_at DESC
-                LIMIT 50
-            """, (current_project,))
-            updates = cursor.fetchall()
-            
-            # Group updates by item
-            for update in updates:
-                item_id = update['item_id'] or 'general'
-                if item_id not in updates_by_item:
-                    # Get item info if linked
-                    item_info = None
-                    if item_id != 'general':
-                        cursor.execute("SELECT id, title FROM items WHERE id = %s", (item_id,))
-                        item_info = cursor.fetchone()
-                    updates_by_item[item_id] = {'item': item_info, 'updates': []}
-                updates_by_item[item_id]['updates'].append(update)
-        
         # Get relationships
         relationships = get_all_relationships(current_project)
 
@@ -772,35 +881,104 @@ def index():
         current_project_dir=current_project_dir,
         statuses=STATUSES,
         items_by_status=items_by_status,
-        updates_by_item=updates_by_item,
         relationships=relationships,
         epic_progress=epic_progress
     )
+
+
+def _run_with_gunicorn(host, port):
+    """Run with gunicorn (Unix only)."""
+    from gunicorn.app.base import BaseApplication
+
+    class KanbanGunicorn(BaseApplication):
+        def __init__(self, flask_app, options=None):
+            self.flask_app = flask_app
+            self.options = options or {}
+            super().__init__()
+
+        def load_config(self):
+            for key, value in self.options.items():
+                self.cfg.set(key.lower(), value)
+
+        def load(self):
+            return self.flask_app
+
+    options = {
+        'bind': f'{host}:{port}',
+        'workers': 1,
+        'accesslog': '-',
+    }
+    KanbanGunicorn(app, options).run()
+
+
+def _run_with_waitress(host, port):
+    """Run with waitress (cross-platform)."""
+    from waitress import serve
+    serve(app, host=host, port=port)
+
 
 def main():
     """Main entry point for kanban-web console script."""
     import argparse
     parser = argparse.ArgumentParser(description='Kanban web UI')
-    parser.add_argument('--port', '-p', type=int, default=5000, help='Port to run on')
-    parser.add_argument('--host', '-H', default='127.0.0.1', help='Host to bind to')
-    parser.add_argument('--debug', '-d', action='store_true', help='Debug mode')
+    parser.add_argument(
+        '--port', '-p', type=int,
+        default=5000, help='Port to run on',
+    )
+    parser.add_argument(
+        '--host', '-H', default='127.0.0.1',
+        help='Host to bind to',
+    )
+    parser.add_argument(
+        '--debug', '-d', action='store_true',
+        help='Debug mode',
+    )
     args = parser.parse_args()
 
     if args.host in ('0.0.0.0', '::'):
         print(
-            f"WARNING: Binding to {args.host} exposes this server to the network. "
-            "There is no authentication — anyone on your network can read/modify data.",
-            file=sys.stderr
+            f"WARNING: Binding to {args.host}"
+            " exposes this server to the"
+            " network. There is no"
+            " authentication — anyone on your"
+            " network can read/modify data.",
+            file=sys.stderr,
         )
-        if args.debug:
+    if args.debug:
+        print(
+            f"Starting kanban web UI on"
+            f" http://{args.host}:{args.port}"
+            f" (debug mode, Flask dev server)"
+        )
+        app.run(
+            host=args.host, port=args.port,
+            use_reloader=True,
+        )
+        return
+
+    print(
+        f"Starting kanban web UI on"
+        f" http://{args.host}:{args.port}"
+    )
+    try:
+        import gunicorn  # noqa: F401
+        print("Using gunicorn")
+        _run_with_gunicorn(args.host, args.port)
+    except ImportError:
+        try:
+            import waitress  # noqa: F401
+            print("Using waitress")
+            _run_with_waitress(args.host, args.port)
+        except ImportError:
             print(
-                "WARNING: Debug mode with a public binding is especially dangerous — "
-                "Werkzeug's debugger allows arbitrary code execution.",
+                "WARNING: No production WSGI"
+                " server found. Using Flask"
+                " dev server.\n"
+                "Install waitress with:"
+                " pip install waitress",
                 file=sys.stderr
             )
-
-    print(f"Starting kanban web UI on http://{args.host}:{args.port}")
-    app.run(host=args.host, port=args.port, debug=args.debug)
+            app.run(host=args.host, port=args.port)
 
 
 if __name__ == '__main__':

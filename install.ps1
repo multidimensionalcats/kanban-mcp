@@ -17,14 +17,30 @@
 #   -Docker          Use Docker for MySQL (starts docker compose stack)
 #   -DbHost HOST     MySQL host (default: localhost)
 #   -WithSemantic    Also install semantic search dependencies
+#   -Upgrade         Upgrade existing Docker install (re-downloads files, rebuilds, restarts)
+#   -Uninstall       Remove kanban-mcp (package, config, optionally DB and Docker data)
 #
 
 param(
     [switch]$Auto,
     [switch]$Docker,
     [string]$DbHost = "",
-    [switch]$WithSemantic
+    [switch]$WithSemantic,
+    [switch]$Upgrade,
+    [switch]$Uninstall
 )
+
+# Wrap in a function so 'return' exits cleanly when piped via irm | iex
+# (using 'exit' in a piped script kills the entire PowerShell host)
+function Install-KanbanMcpServer {
+    param(
+        [switch]$Auto,
+        [switch]$Docker,
+        [string]$DbHost = "",
+        [switch]$WithSemantic,
+        [switch]$Upgrade,
+        [switch]$Uninstall
+    )
 
 $ErrorActionPreference = "Stop"
 
@@ -33,6 +49,203 @@ $ConfigDir = if ($env:APPDATA) { Join-Path $env:APPDATA "kanban-mcp" } else { Jo
 
 Write-Host "=== kanban-mcp Install ===" -ForegroundColor Cyan
 Write-Host ""
+
+# ─── Upgrade path (early exit) ────────────────────────────────────
+
+if ($Upgrade) {
+    $dockerDir = Join-Path $ConfigDir "docker"
+    $composeFile = Join-Path $dockerDir "docker-compose.yml"
+
+    if (-not (Test-Path $composeFile)) {
+        Write-Host "Error: No Docker installation found at $dockerDir" -ForegroundColor Red
+        Write-Host "For pipx upgrades:  pipx upgrade kanban-mcp"
+        Write-Host "For fresh install:  .\install.ps1 -Docker"
+        return
+    }
+
+    $env:PATH = [Environment]::GetEnvironmentVariable("PATH", "User") + ";" + [Environment]::GetEnvironmentVariable("PATH", "Machine")
+    try {
+        $null = Get-Command "docker" -ErrorAction Stop
+        docker compose version 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw }
+    } catch {
+        Write-Host "Error: Docker or docker compose not found." -ForegroundColor Red
+        return
+    }
+
+    Write-Host "Upgrading Docker installation..."
+    Write-Host ""
+
+    # Re-download latest Docker files
+    Write-Host "Downloading latest files..."
+    Invoke-WebRequest -Uri "$GithubRaw/docker-compose.yml" -OutFile $composeFile
+    Invoke-WebRequest -Uri "$GithubRaw/Dockerfile" -OutFile (Join-Path $dockerDir "Dockerfile")
+    Invoke-WebRequest -Uri "$GithubRaw/entrypoint.sh" -OutFile (Join-Path $dockerDir "entrypoint.sh")
+    Write-Host "Files updated."
+    Write-Host ""
+
+    # Load .env for compose
+    $envFile = Join-Path $ConfigDir ".env"
+    if (Test-Path $envFile) {
+        Get-Content $envFile | ForEach-Object {
+            if ($_ -match '^\s*([^#][^=]+)=(.*)$') {
+                [Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim(), "Process")
+            }
+        }
+    }
+
+    # Rebuild and restart
+    Write-Host "Rebuilding web image..."
+    docker compose -f $composeFile build --no-cache
+    Write-Host ""
+
+    Write-Host "Restarting services..."
+    docker compose -f $composeFile up -d
+    Write-Host ""
+
+    Write-Host "=== Upgrade complete ===" -ForegroundColor Green
+    Write-Host "The web container will run any pending database migrations on startup."
+    Write-Host "Check logs: docker compose -f $composeFile logs -f web"
+    return
+}
+
+# ─── Uninstall path (early exit) ─────────────────────────────────────
+
+if ($Uninstall) {
+    Write-Host "=== kanban-mcp Uninstall ===" -ForegroundColor Cyan
+    Write-Host ""
+    $removed = @()
+
+    # 1. Remove pipx package
+    $pipxList = ""
+    try { $pipxList = pipx list 2>&1 } catch {}
+    if ($pipxList -match "kanban-mcp") {
+        Write-Host "Removing kanban-mcp package..."
+        pipx uninstall kanban-mcp
+        $removed += "kanban-mcp pipx package"
+    } else {
+        Write-Host "kanban-mcp pipx package not found (skipping)."
+    }
+
+    # Warn if kanban-mcp is still on PATH (pip/source install)
+    $remaining = Get-Command "kanban-mcp" -ErrorAction SilentlyContinue
+    if ($remaining) {
+        Write-Host "Warning: kanban-mcp is still on PATH (likely a pip or source install)." -ForegroundColor Yellow
+        Write-Host "  Location: $($remaining.Source)"
+        Write-Host "  To remove: pip uninstall kanban-mcp"
+    }
+    Write-Host ""
+
+    # 2. Docker cleanup
+    $composeFile = Join-Path $ConfigDir "docker/docker-compose.yml"
+    if (Test-Path $composeFile) {
+        $dockerOk = $false
+        $env:PATH = [Environment]::GetEnvironmentVariable("PATH", "User") + ";" + [Environment]::GetEnvironmentVariable("PATH", "Machine")
+        try {
+            $null = Get-Command "docker" -ErrorAction Stop
+            docker compose version 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { $dockerOk = $true }
+        } catch {}
+
+        if ($dockerOk) {
+            # Load .env so compose can resolve variables
+            $envFile = Join-Path $ConfigDir ".env"
+            if (Test-Path $envFile) {
+                Get-Content $envFile | ForEach-Object {
+                    if ($_ -match '^\s*([^#][^=]+)=(.*)$') {
+                        [Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim(), "Process")
+                    }
+                }
+            }
+
+            Write-Host "Stopping Docker containers..."
+            docker compose -f $composeFile down
+            $removed += "Docker containers"
+
+            if (-not $Auto) {
+                Write-Host ""
+                $removeVolume = Read-Host "Remove Docker data volume? This DELETES ALL kanban data. [y/N]"
+                if (-not $removeVolume) { $removeVolume = "N" }
+                if ($removeVolume -match "^[Yy]") {
+                    docker compose -f $composeFile down -v
+                    $removed += "Docker data volume"
+                }
+            }
+        } else {
+            Write-Host "Docker not available - skipping container cleanup."
+            Write-Host "Docker files remain at: $(Join-Path $ConfigDir 'docker')"
+        }
+    }
+    Write-Host ""
+
+    # 3. MySQL database cleanup
+    if (-not $Auto) {
+        $dropDb = Read-Host "Drop MySQL database and user? [y/N]"
+        if (-not $dropDb) { $dropDb = "N" }
+        if ($dropDb -match "^[Yy]") {
+            $dbName = if ($env:KANBAN_DB_NAME) { $env:KANBAN_DB_NAME } else { "kanban" }
+            $dbUser = if ($env:KANBAN_DB_USER) { $env:KANBAN_DB_USER } else { "kanban" }
+            $dbHostVal = if ($env:KANBAN_DB_HOST) { $env:KANBAN_DB_HOST } else { "localhost" }
+
+            # Try loading from .env if not already set
+            $envFile = Join-Path $ConfigDir ".env"
+            if (Test-Path $envFile) {
+                Get-Content $envFile | ForEach-Object {
+                    if ($_ -match '^\s*([^#][^=]+)=(.*)$') {
+                        [Environment]::SetEnvironmentVariable($matches[1].Trim(), $matches[2].Trim(), "Process")
+                    }
+                }
+                if ($env:KANBAN_DB_NAME) { $dbName = $env:KANBAN_DB_NAME }
+                if ($env:KANBAN_DB_USER) { $dbUser = $env:KANBAN_DB_USER }
+                if ($env:KANBAN_DB_HOST) { $dbHostVal = $env:KANBAN_DB_HOST }
+            }
+
+            Write-Host "Will drop database '$dbName' and user '$dbUser' on '$dbHostVal'."
+            $mysqlAdmin = Read-Host "MySQL admin user [root]"
+            if (-not $mysqlAdmin) { $mysqlAdmin = "root" }
+            $mysqlAdminPw = Read-Host "MySQL admin password" -AsSecureString
+            $mysqlAdminPwPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                [Runtime.InteropServices.Marshal]::SecureStringToBSTR($mysqlAdminPw))
+
+            if (Get-Command "mysql" -ErrorAction SilentlyContinue) {
+                $sqlCmd = "DROP DATABASE IF EXISTS ``$dbName``; DROP USER IF EXISTS '$dbUser'@'%'; DROP USER IF EXISTS '$dbUser'@'localhost'; FLUSH PRIVILEGES;"
+                $ErrorActionPreference = "Continue"
+                mysql -h $dbHostVal -u $mysqlAdmin -p"$mysqlAdminPwPlain" -e $sqlCmd 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                    $removed += "MySQL database '$dbName' and user '$dbUser'"
+                } else {
+                    Write-Host "Warning: Failed to drop database/user. You may need to do this manually." -ForegroundColor Yellow
+                }
+                $ErrorActionPreference = "Stop"
+            } else {
+                Write-Host "mysql client not found. Drop manually:" -ForegroundColor Yellow
+                Write-Host "  DROP DATABASE IF EXISTS ``$dbName``;"
+                Write-Host "  DROP USER IF EXISTS '$dbUser'@'localhost';"
+            }
+        }
+    }
+    Write-Host ""
+
+    # 4. Remove config directory
+    if (Test-Path $ConfigDir) {
+        Write-Host "Removing config directory: $ConfigDir"
+        Remove-Item -Recurse -Force $ConfigDir
+        $removed += "Config directory ($ConfigDir)"
+    }
+
+    Write-Host ""
+    Write-Host "=== Uninstall complete ===" -ForegroundColor Green
+    if ($removed.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Removed:"
+        foreach ($item in $removed) {
+            Write-Host "  - $item"
+        }
+    }
+    Write-Host ""
+    Write-Host "You may also want to remove kanban-mcp from your MCP client config."
+    return
+}
 
 # ─── Helper functions ───────────────────────────────────────────────
 
@@ -45,7 +258,7 @@ function Test-Python {
     } else {
         Write-Host "Error: Python 3.10+ is required but not found." -ForegroundColor Red
         Write-Host "Install Python from https://www.python.org/downloads/"
-        exit 1
+        return
     }
 
     $ver = & $script:Python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
@@ -54,7 +267,7 @@ function Test-Python {
     $minor = [int]$parts[1]
     if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 10)) {
         Write-Host "Error: Python 3.10+ is required (found $ver)." -ForegroundColor Red
-        exit 1
+        return
     }
     Write-Host "Found Python $ver"
 }
@@ -68,19 +281,33 @@ function Test-Pipx {
 }
 
 function Install-Pipx {
+    if (Get-Command "pipx" -ErrorAction SilentlyContinue) {
+        Write-Host "Found pipx"
+        return
+    }
+    # Check if pipx is available as a Python module before trying to install
+    $pipxModule = & $script:Python -m pipx --version 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Found pipx (via $script:Python -m pipx)"
+        try { & $script:Python -m pipx ensurepath 2>$null } catch {}
+        return
+    }
     Write-Host "Installing pipx..."
-    try {
-        & $script:Python -m pip install --user pipx 2>$null
-    } catch {
-        try {
-            & $script:Python -m pip install pipx 2>$null
-        } catch {
+    $ErrorActionPreference = "Continue"
+    & $script:Python -m pip install --user pipx 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        & $script:Python -m pip install pipx 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
             Write-Host "Error: Could not install pipx. Install it manually:" -ForegroundColor Red
             Write-Host "  https://pipx.pypa.io/stable/installation/"
-            exit 1
+            $ErrorActionPreference = "Stop"
+            return
         }
     }
+    $ErrorActionPreference = "Stop"
     try { & $script:Python -m pipx ensurepath 2>$null } catch {}
+    # Refresh PATH
+    $env:PATH = [Environment]::GetEnvironmentVariable("PATH", "User") + ";" + [Environment]::GetEnvironmentVariable("PATH", "Machine")
     if (-not (Get-Command "pipx" -ErrorAction SilentlyContinue)) {
         Write-Host "pipx installed but not in PATH. You may need to restart your shell."
     }
@@ -112,6 +339,8 @@ function Test-MysqlRunning {
 }
 
 function Test-DockerAvailable {
+    # Refresh PATH so newly-installed programs (e.g. Docker Desktop) are found
+    $env:PATH = [Environment]::GetEnvironmentVariable("PATH", "User") + ";" + [Environment]::GetEnvironmentVariable("PATH", "Machine")
     try {
         $null = Get-Command "docker" -ErrorAction Stop
         docker compose version 2>$null | Out-Null
@@ -128,15 +357,7 @@ function Get-DockerFiles {
     Write-Host "Downloading Docker files..."
     Invoke-WebRequest -Uri "$GithubRaw/docker-compose.yml" -OutFile (Join-Path $dockerDir "docker-compose.yml")
     Invoke-WebRequest -Uri "$GithubRaw/Dockerfile" -OutFile (Join-Path $dockerDir "Dockerfile")
-    Invoke-WebRequest -Uri "$GithubRaw/pyproject.toml" -OutFile (Join-Path $dockerDir "pyproject.toml")
-
-    # Download migrations
-    $migrationsDir = Join-Path $dockerDir "kanban_mcp/migrations"
-    New-Item -ItemType Directory -Path $migrationsDir -Force | Out-Null
-    Invoke-WebRequest -Uri "$GithubRaw/kanban_mcp/__init__.py" -OutFile (Join-Path $dockerDir "kanban_mcp/__init__.py")
-    foreach ($migration in @("001_initial_schema.sql", "002_add_fulltext_search.sql", "003_add_embeddings.sql", "004_add_cascades_and_indexes.sql")) {
-        Invoke-WebRequest -Uri "$GithubRaw/kanban_mcp/migrations/$migration" -OutFile (Join-Path $migrationsDir $migration)
-    }
+    Invoke-WebRequest -Uri "$GithubRaw/entrypoint.sh" -OutFile (Join-Path $dockerDir "entrypoint.sh")
 
     Write-Host "Docker files downloaded to $dockerDir"
     return $dockerDir
@@ -164,73 +385,18 @@ function Start-DockerMysql {
     Write-Host "Check status with: docker compose -f $(Join-Path $DockerDir 'docker-compose.yml') ps"
 }
 
-function Find-Migrations {
-    if (Test-Path ".\kanban_mcp\migrations") {
-        return ".\kanban_mcp\migrations"
-    }
-    try {
-        $pkgDir = & $script:Python -c "import kanban_mcp; import os; print(os.path.dirname(kanban_mcp.__file__))" 2>$null
-        if ($pkgDir -and (Test-Path "$pkgDir\migrations")) {
-            return "$pkgDir\migrations"
-        }
-    } catch {}
-    return $null
-}
-
 function Invoke-DbSetup {
     param([string]$Host_, [string]$Name, [string]$User, [string]$Password)
 
-    if (-not (Get-Command "mysql" -ErrorAction SilentlyContinue)) {
-        Write-Host "Error: mysql client not found." -ForegroundColor Red
-        Write-Host "Install MySQL and ensure mysql.exe is in your PATH."
-        Write-Host "Download: https://dev.mysql.com/downloads/mysql/"
-        exit 1
-    }
+    Write-Host "--- Running kanban-setup ---"
 
-    $migrationsDir = Find-Migrations
-    if (-not $migrationsDir) {
-        Write-Host "Error: Could not find migration files." -ForegroundColor Red
-        Write-Host "Ensure kanban-mcp is installed (pipx install kanban-mcp)."
-        exit 1
-    }
+    $env:KANBAN_DB_HOST = $Host_
+    $env:KANBAN_DB_NAME = $Name
+    $env:KANBAN_DB_USER = $User
+    $env:KANBAN_DB_PASSWORD = $Password
+    if (-not $env:MYSQL_ROOT_USER) { $env:MYSQL_ROOT_USER = "root" }
 
-    Write-Host "Found migrations in: $migrationsDir"
-    Write-Host ""
-
-    # --- Create database and user ---
-    Write-Host "--- Creating database and user ---"
-
-    $MysqlRootUser = if ($env:MYSQL_ROOT_USER) { $env:MYSQL_ROOT_USER } else { "root" }
-    $MysqlRootPassword = $env:MYSQL_ROOT_PASSWORD
-
-    $SetupSql = @"
-CREATE DATABASE IF NOT EXISTS ``$Name`` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS '$User'@'%' IDENTIFIED BY '$Password';
-GRANT ALL PRIVILEGES ON ``$Name``.* TO '$User'@'%';
-FLUSH PRIVILEGES;
-"@
-
-    if ($MysqlRootPassword) {
-        $SetupSql | mysql -u $MysqlRootUser -p"$MysqlRootPassword" -h $Host_
-    } elseif (-not $Auto) {
-        Write-Host "(You may be prompted for the MySQL root password)"
-        $SetupSql | mysql -u $MysqlRootUser -p -h $Host_
-    } else {
-        $SetupSql | mysql -u $MysqlRootUser -h $Host_
-    }
-
-    Write-Host "Database and user created."
-
-    # --- Run migrations ---
-    Write-Host ""
-    Write-Host "--- Running migrations ---"
-
-    Get-ChildItem "$migrationsDir\0*.sql" | Sort-Object Name | ForEach-Object {
-        Write-Host "  Applying $($_.Name)..."
-        Get-Content $_.FullName -Raw | mysql -u $User -p"$Password" -h $Host_ $Name
-    }
-
-    Write-Host "Migrations complete."
+    kanban-setup --auto
 }
 
 function Write-EnvFile {
@@ -266,7 +432,7 @@ KANBAN_DB_NAME=$Name
 }
 
 function Write-NextSteps {
-    param([string]$Host_, [string]$User, [string]$Password, [string]$Name)
+    param([string]$Host_, [string]$User, [string]$Password, [string]$Name, [switch]$IsDocker)
 
     Write-Host ""
     Write-Host "=== Setup complete ===" -ForegroundColor Green
@@ -292,9 +458,13 @@ function Write-NextSteps {
    }
 "@
     Write-Host ""
-    Write-Host "2. Start the web UI (optional):"
-    Write-Host "   kanban-web"
-    Write-Host "   Open http://localhost:5000"
+    if ($IsDocker) {
+        Write-Host "2. The web UI is running at http://localhost:5000"
+    } else {
+        Write-Host "2. Start the web UI (optional):"
+        Write-Host "   kanban-web"
+        Write-Host "   Open http://localhost:5000"
+    }
     Write-Host ""
     Write-Host "3. Verify installation:"
     Write-Host "   kanban-cli --project C:\path\to\your\project summary"
@@ -304,6 +474,11 @@ function Write-NextSteps {
 # ─── Step 1: Python & kanban-mcp ────────────────────────────────────
 
 Test-Python
+
+if (-not $script:Python) {
+    # Test-Python failed — error already printed
+    return
+}
 
 if (-not (Get-Command "kanban-mcp" -ErrorAction SilentlyContinue)) {
     Write-Host ""
@@ -367,7 +542,7 @@ switch ($MysqlMethod) {
                 if ($Auto) {
                     Write-Host "Use -Docker flag to start MySQL via Docker."
                     Write-Host "Or start MySQL manually and re-run this script."
-                    exit 1
+                    return
                 }
                 $startDocker = Read-Host "Start MySQL via Docker? [Y/n]"
                 if (-not $startDocker) { $startDocker = "Y" }
@@ -376,14 +551,14 @@ switch ($MysqlMethod) {
                 } else {
                     Write-Host ""
                     Write-Host "Please start MySQL and re-run this script."
-                    exit 1
+                    return
                 }
             } else {
                 Write-Host ""
                 Write-Host "Docker is not available either. Please install MySQL or Docker:"
                 Write-Host "  MySQL: https://dev.mysql.com/downloads/"
                 Write-Host "  Docker: https://docs.docker.com/get-docker/"
-                exit 1
+                return
             }
         }
     }
@@ -393,7 +568,7 @@ switch ($MysqlMethod) {
         }
         if (-not $DbHost) {
             Write-Host "Error: No host provided." -ForegroundColor Red
-            exit 1
+            return
         }
         Write-Host "Will connect to MySQL at $DbHost"
     }
@@ -401,7 +576,7 @@ switch ($MysqlMethod) {
         if (-not (Test-DockerAvailable)) {
             Write-Host "Error: Docker is not installed or docker compose is not available." -ForegroundColor Red
             Write-Host "Install Docker: https://docs.docker.com/get-docker/"
-            exit 1
+            return
         }
     }
 }
@@ -428,7 +603,7 @@ if ($MysqlMethod -eq "docker") {
     Write-Host ""
 
     Write-EnvFile -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName
-    Write-NextSteps -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName
+    Write-NextSteps -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName -IsDocker
 
     Write-Host "Docker compose files: $dockerDir"
     Write-Host "Manage with: docker compose -f $(Join-Path $dockerDir 'docker-compose.yml') [up|down|logs]"
@@ -481,7 +656,7 @@ if ($MysqlMethod -eq "docker") {
         if (-not $confirm) { $confirm = "Y" }
         if ($confirm -notmatch "^[Yy]") {
             Write-Host "Aborted."
-            exit 0
+            return
         }
     }
 
@@ -497,3 +672,15 @@ if ($MysqlMethod -eq "docker") {
     Write-EnvFile -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName
     Write-NextSteps -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName
 }
+
+} # end Install-KanbanMcpServer
+
+# Run the installer — pass script-level params into the function explicitly
+$splat = @{}
+if ($Auto) { $splat.Auto = $true }
+if ($Docker) { $splat.Docker = $true }
+if ($DbHost) { $splat.DbHost = $DbHost }
+if ($WithSemantic) { $splat.WithSemantic = $true }
+if ($Upgrade) { $splat.Upgrade = $true }
+if ($Uninstall) { $splat.Uninstall = $true }
+Install-KanbanMcpServer @splat
