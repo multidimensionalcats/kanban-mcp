@@ -325,9 +325,12 @@ install_kanban_mcp() {
 check_mysql_running() {
     local host="${1:-localhost}"
     local port="${2:-3306}"
-    # Try multiple methods to check MySQL reachability
+    # Try multiple methods to check MySQL/MariaDB reachability
     if command -v mysqladmin &>/dev/null; then
         mysqladmin ping -h "$host" -P "$port" --connect-timeout=2 &>/dev/null && return 0
+    fi
+    if command -v mariadb-admin &>/dev/null; then
+        mariadb-admin ping -h "$host" -P "$port" --connect-timeout=2 &>/dev/null && return 0
     fi
     if command -v mysql &>/dev/null; then
         mysql -h "$host" -P "$port" -u root --connect-timeout=2 -e "SELECT 1" &>/dev/null 2>&1 && return 0
@@ -515,9 +518,9 @@ elif [ "$AUTO" = true ]; then
     MYSQL_METHOD="local"
 else
     # Interactive: detect and ask
-    echo "How do you want to connect to MySQL?"
-    echo "  1) Local MySQL (default)"
-    echo "  2) Remote MySQL server"
+    echo "How do you want to connect to MySQL/MariaDB?"
+    echo "  1) Local MySQL/MariaDB (default)"
+    echo "  2) Remote MySQL/MariaDB server"
     echo "  3) Docker (starts MySQL in a container)"
     read -rp "Choice [1]: " MYSQL_CHOICE < /dev/tty
     MYSQL_CHOICE=${MYSQL_CHOICE:-1}
@@ -537,9 +540,9 @@ case "$MYSQL_METHOD" in
     local)
         DB_HOST="${KANBAN_DB_HOST:-localhost}"
         if check_mysql_running "$DB_HOST"; then
-            echo "MySQL is running on $DB_HOST."
+            echo "MySQL/MariaDB is running on $DB_HOST."
         else
-            echo "MySQL is not running on $DB_HOST."
+            echo "MySQL/MariaDB is not running on $DB_HOST."
             if check_docker; then
                 if [ "$AUTO" = true ]; then
                     echo "Use --docker flag to start MySQL via Docker."
@@ -552,17 +555,18 @@ case "$MYSQL_METHOD" in
                     MYSQL_METHOD="docker"
                 else
                     echo
-                    echo "Please start MySQL and re-run this script."
+                    echo "Please start MySQL/MariaDB and re-run this script."
                     echo "  Ubuntu/Debian: sudo systemctl start mysql"
                     echo "  macOS:         brew services start mysql"
-                    echo "  Arch:          sudo systemctl start mysqld"
+                    echo "  Arch/Fedora:   sudo systemctl start mariadb"
                     exit 1
                 fi
             else
                 echo
-                echo "Docker is not available either. Please install MySQL or Docker:"
-                echo "  MySQL: https://dev.mysql.com/downloads/"
-                echo "  Docker: https://docs.docker.com/get-docker/"
+                echo "Docker is not available either. Please install MySQL/MariaDB or Docker:"
+                echo "  MySQL:   https://dev.mysql.com/downloads/"
+                echo "  MariaDB: https://mariadb.org/download/"
+                echo "  Docker:  https://docs.docker.com/get-docker/"
                 exit 1
             fi
         fi

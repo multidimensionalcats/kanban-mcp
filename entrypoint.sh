@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "Waiting for MySQL..."
+echo "Waiting for database..."
 retries=30
 until python -c "
 import os, mysql.connector
@@ -14,13 +14,13 @@ mysql.connector.connect(
 " 2>/dev/null; do
     retries=$((retries - 1))
     if [ $retries -le 0 ]; then
-        echo "ERROR: Could not connect to MySQL after 30 attempts."
+        echo "ERROR: Could not connect to database after 30 attempts."
         exit 1
     fi
-    echo "  MySQL not ready, retrying in 2s... ($retries attempts left)"
+    echo "  Database not ready, retrying in 2s... ($retries attempts left)"
     sleep 2
 done
-echo "MySQL is ready."
+echo "Database is ready."
 
 echo "Running database migrations..."
 python -c "

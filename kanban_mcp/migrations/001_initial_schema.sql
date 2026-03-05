@@ -2,7 +2,7 @@
 -- Run with: mysql -u kanban -p kanban < migrations/001_initial_schema.sql
 --
 -- Prerequisites:
---   CREATE DATABASE kanban CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+--   CREATE DATABASE kanban CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 --   CREATE USER 'kanban'@'localhost' IDENTIFIED BY 'changeme';
 --   GRANT ALL PRIVILEGES ON kanban.* TO 'kanban'@'localhost';
 
@@ -13,12 +13,12 @@
 CREATE TABLE IF NOT EXISTS item_types (
     id TINYINT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(20) NOT NULL UNIQUE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS statuses (
     id TINYINT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(30) NOT NULL UNIQUE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS type_status_workflow (
     type_id TINYINT NOT NULL,
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS type_status_workflow (
     PRIMARY KEY (type_id, status_id),
     FOREIGN KEY (type_id) REFERENCES item_types(id),
     FOREIGN KEY (status_id) REFERENCES statuses(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================
 -- Core tables
@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS projects (
     directory_path VARCHAR(500) NOT NULL UNIQUE,
     name VARCHAR(100) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS items (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS items (
     INDEX idx_project_status (project_id, status_id),
     INDEX idx_type_status (type_id, status_id),
     INDEX idx_items_parent_id (parent_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS updates (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS updates (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id),
     INDEX idx_project_created (project_id, created_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS update_items (
     update_id INT NOT NULL,
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS update_items (
     PRIMARY KEY (update_id, item_id),
     FOREIGN KEY (update_id) REFERENCES updates(id) ON DELETE CASCADE,
     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS item_relationships (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -88,7 +88,7 @@ CREATE TABLE IF NOT EXISTS item_relationships (
     UNIQUE KEY unique_relationship (source_item_id, target_item_id, relationship_type),
     FOREIGN KEY (source_item_id) REFERENCES items(id) ON DELETE CASCADE,
     FOREIGN KEY (target_item_id) REFERENCES items(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS tags (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS tags (
     UNIQUE KEY unique_tag_per_project (project_id, name),
     INDEX idx_project_tags (project_id),
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS item_tags (
     item_id INT NOT NULL,
@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS item_tags (
     INDEX idx_tag_items (tag_id),
     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
     FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS item_files (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS item_files (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY unique_item_file_lines (item_id, file_path, line_start, line_end),
     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS item_decisions (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -131,7 +131,7 @@ CREATE TABLE IF NOT EXISTS item_decisions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_item_decisions_item (item_id),
     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS status_history (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS status_history (
     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
     FOREIGN KEY (old_status_id) REFERENCES statuses(id),
     FOREIGN KEY (new_status_id) REFERENCES statuses(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ============================================================
 -- Seed data

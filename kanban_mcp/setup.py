@@ -28,7 +28,7 @@ _BACKFILL_CUTOFF = 4
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kanban-setup",
-        description="Set up the MySQL database for kanban-mcp",
+        description="Set up the MySQL/MariaDB database for kanban-mcp",
     )
     parser.add_argument(
         "--auto",
@@ -53,15 +53,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--db-password", default=None, help="Database password",
     )
     parser.add_argument(
-        "--db-host", default=None, help="MySQL host",
+        "--db-host", default=None, help="MySQL/MariaDB host",
     )
     parser.add_argument(
         "--mysql-root-user", default=None,
-        help="MySQL admin user for setup",
+        help="MySQL/MariaDB admin user for setup",
     )
     parser.add_argument(
         "--mysql-root-password", default=None,
-        help="MySQL admin password",
+        help="MySQL/MariaDB admin password",
     )
     parser.add_argument(
         "--migrate-only",
@@ -235,11 +235,11 @@ def _run_interactive(args: argparse.Namespace) -> dict:
         "Database host", defaults["db_host"] or "localhost",
     )
     mysql_root_user = _prompt(
-        "MySQL root user for setup",
+        "MySQL/MariaDB root user for setup",
         defaults["mysql_root_user"] or "root",
     )
     mysql_root_password = _prompt(
-        "MySQL root password (blank for socket auth)", "",
+        "MySQL/MariaDB root password (blank for socket auth)", "",
     )
 
     return {
@@ -253,9 +253,10 @@ def _run_interactive(args: argparse.Namespace) -> dict:
 
 
 def _find_mysql_socket() -> str | None:
-    """Find the MySQL Unix socket path."""
+    """Find the MySQL/MariaDB Unix socket path."""
     candidates = [
         "/var/run/mysqld/mysqld.sock",   # Debian/Ubuntu
+        "/var/run/mariadb/mariadb.sock", # MariaDB (Arch, Fedora)
         "/var/lib/mysql/mysql.sock",     # RHEL/CentOS
         "/tmp/mysql.sock",               # macOS (Homebrew)  # nosec B108
         "/var/mysql/mysql.sock",         # macOS (official)
@@ -267,7 +268,7 @@ def _find_mysql_socket() -> str | None:
 
 
 def _print_auth_error(err: MySQLError, config: dict) -> None:
-    """Print a user-friendly error message based on MySQL error code."""
+    """Print a user-friendly error message based on MySQL/MariaDB error code."""
     user = config["mysql_root_user"]
     host = config["db_host"]
     errno = getattr(err, "errno", None)
@@ -290,12 +291,12 @@ def _print_auth_error(err: MySQLError, config: dict) -> None:
         )
     elif errno in (2002, 2003):
         print(
-            f"Error: Cannot connect to MySQL at {host}."
+            f"Error: Cannot connect to MySQL/MariaDB at {host}."
             " Is the server running?"
         )
     else:
         print(
-            f"Error: Could not connect to MySQL"
+            f"Error: Could not connect to MySQL/MariaDB"
             f" as {user}: {err}"
             "\n  Try setting MYSQL_ROOT_PASSWORD or run"
             " `kanban-setup` interactively."
@@ -303,7 +304,7 @@ def _print_auth_error(err: MySQLError, config: dict) -> None:
 
 
 def _create_database(config: dict) -> None:
-    """Connect as MySQL root and create the database + user.
+    """Connect as MySQL/MariaDB root and create the database + user.
 
     On localhost without a root password, uses a fallback chain:
     1. Try Unix socket auth (Debian/Ubuntu default)
@@ -329,7 +330,7 @@ def _create_database(config: dict) -> None:
             # Remove host — socket and host are mutually exclusive
             connect_args.pop("host", None)
 
-    print("Connecting to MySQL as root...")
+    print("Connecting to MySQL/MariaDB as root...")
     try:
         conn = mysql.connector.connect(**connect_args)
     except MySQLError as e:
@@ -686,7 +687,7 @@ def main() -> None:
         print(f"  rm -rf {get_config_dir()}")
         print()
         print(
-            "To drop the MySQL database and user,"
+            "To drop the MySQL/MariaDB database and user,"
             " connect as root and run:"
         )
         print("  DROP DATABASE IF EXISTS kanban;")
