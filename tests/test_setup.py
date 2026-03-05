@@ -808,12 +808,30 @@ class TestSplitSql(unittest.TestCase):
         from kanban_mcp.setup import _split_sql
         self.assertEqual(_split_sql(""), [])
 
-    def test_comments_preserved(self):
+    def test_comments_stripped(self):
         from kanban_mcp.setup import _split_sql
         sql = "-- comment\nCREATE TABLE foo (id INT);"
         result = _split_sql(sql)
         self.assertEqual(len(result), 1)
         self.assertIn("CREATE TABLE", result[0])
+
+    def test_inline_comment_stripped(self):
+        from kanban_mcp.setup import _split_sql
+        sql = "SELECT 1; -- trailing comment\nSELECT 2;"
+        result = _split_sql(sql)
+        self.assertEqual(result, ["SELECT 1", "SELECT 2"])
+
+    def test_double_dash_inside_quotes_preserved(self):
+        from kanban_mcp.setup import _split_sql
+        sql = "INSERT INTO t VALUES ('a -- b');"
+        result = _split_sql(sql)
+        self.assertEqual(result, ["INSERT INTO t VALUES ('a -- b')"])
+
+    def test_escaped_quotes(self):
+        from kanban_mcp.setup import _split_sql
+        sql = "INSERT INTO t VALUES ('it''s -- ok');"
+        result = _split_sql(sql)
+        self.assertEqual(result, ["INSERT INTO t VALUES ('it''s -- ok')"])
 
 
 class TestFindMysqlSocket(unittest.TestCase):

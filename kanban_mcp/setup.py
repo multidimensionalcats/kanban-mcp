@@ -403,18 +403,42 @@ def _create_database(config: dict) -> None:
 
 
 def _split_sql(sql: str) -> list[str]:
-    """Split a SQL script on semicolons, stripping comments."""
-    # Remove single-line comments (-- ...)
-    lines = []
+    """Split a SQL script on semicolons, respecting quotes.
+
+    Strips ``-- …`` line comments while preserving ``--`` that
+    appears inside single-quoted string literals.
+    """
+    # 1. Strip comments, but not inside quotes
+    cleaned_lines: list[str] = []
     for line in sql.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("--"):
-            continue
-        lines.append(line)
-    cleaned = "\n".join(lines)
-    return [
-        s.strip() for s in cleaned.split(";") if s.strip()
-    ]
+        out: list[str] = []
+        in_quote = False
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if ch == "'" and not in_quote:
+                in_quote = True
+                out.append(ch)
+            elif ch == "'" and in_quote:
+                # handle escaped quote ('')
+                if i + 1 < len(line) and line[i + 1] == "'":
+                    out.append("''")
+                    i += 1
+                else:
+                    in_quote = False
+                    out.append(ch)
+            elif ch == "-" and not in_quote:
+                if i + 1 < len(line) and line[i + 1] == "-":
+                    break  # rest of line is a comment
+                out.append(ch)
+            else:
+                out.append(ch)
+            i += 1
+        cleaned_lines.append("".join(out))
+    cleaned = "\n".join(cleaned_lines)
+
+    # 2. Split on semicolons
+    return [s.strip() for s in cleaned.split(";") if s.strip()]
 
 
 def _ensure_schema_migrations_table(cursor) -> None:
@@ -543,7 +567,17 @@ def _run_migrations(config: dict) -> None:
         sql = mfile.read_text()
         try:
             for stmt in _split_sql(sql):
-                cursor.execute(stmt)
+                try:
+                    cursor.execute(stmt)
+                except MySQLError as stmt_err:
+                    # 1146 = Table doesn't exist.  Skip
+                    # gracefully — the table may be optional
+                    # (e.g. embeddings without semantic search).
+                    if stmt_err.errno == 1146:
+                        tbl = getattr(stmt_err, "msg", str(stmt_err))
+                        print(f"    Skipped (table absent): {tbl}")
+                        continue
+                    raise
             cursor.execute(
                 "INSERT INTO schema_migrations"
                 " (filename) VALUES (%s)",
