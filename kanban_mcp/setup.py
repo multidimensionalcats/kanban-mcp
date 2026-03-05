@@ -403,9 +403,17 @@ def _create_database(config: dict) -> None:
 
 
 def _split_sql(sql: str) -> list[str]:
-    """Split a SQL script on semicolons, ignoring empty statements."""
+    """Split a SQL script on semicolons, stripping comments."""
+    # Remove single-line comments (-- ...)
+    lines = []
+    for line in sql.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("--"):
+            continue
+        lines.append(line)
+    cleaned = "\n".join(lines)
     return [
-        s.strip() for s in sql.split(";") if s.strip()
+        s.strip() for s in cleaned.split(";") if s.strip()
     ]
 
 
