@@ -1498,7 +1498,7 @@ class TestLoggingBeforeAutoMigrate(unittest.TestCase):
 
     @patch("kanban_mcp.setup.auto_migrate")
     @patch(
-        "kanban_mcp.core.MySQLConnectionPool",
+        "kanban_mcp.db.mysql_backend.MySQLConnectionPool",
     )
     @patch.dict(os.environ, {
         "KANBAN_DB_USER": "test",
@@ -1619,7 +1619,7 @@ class TestEnvFilePort(unittest.TestCase):
 class TestKanbanDBPort(unittest.TestCase):
     """Test KanbanDB port handling."""
 
-    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch('kanban_mcp.db.mysql_backend.MySQLConnectionPool')
     @patch.dict(os.environ, {
         'KANBAN_DB_USER': 'test',
         'KANBAN_DB_PASSWORD': 'test',
@@ -1635,7 +1635,7 @@ class TestKanbanDBPort(unittest.TestCase):
             db = KanbanDB()
         self.assertEqual(db.config["port"], 3307)
 
-    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch('kanban_mcp.db.mysql_backend.MySQLConnectionPool')
     @patch.dict(os.environ, {
         'KANBAN_DB_USER': 'test',
         'KANBAN_DB_PASSWORD': 'test',
@@ -1648,7 +1648,7 @@ class TestKanbanDBPort(unittest.TestCase):
             db = KanbanDB()
         self.assertEqual(db.config["port"], 3306)
 
-    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch('kanban_mcp.db.mysql_backend.MySQLConnectionPool')
     @patch.dict(os.environ, {
         'KANBAN_DB_USER': 'test',
         'KANBAN_DB_PASSWORD': 'test',
@@ -1659,7 +1659,7 @@ class TestKanbanDBPort(unittest.TestCase):
         db = KanbanDB(port=3308)
         self.assertEqual(db.config["port"], 3308)
 
-    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch('kanban_mcp.db.mysql_backend.MySQLConnectionPool')
     @patch.dict(os.environ, {
         'KANBAN_DB_USER': 'test',
         'KANBAN_DB_PASSWORD': 'test',

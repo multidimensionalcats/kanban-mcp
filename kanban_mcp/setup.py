@@ -87,22 +87,34 @@ def generate_password() -> str:
     return secrets.token_urlsafe(16)
 
 
-def find_migrations_dir() -> str | None:
-    """Find the migrations directory.
+def find_migrations_dir(backend_type: str = "mysql") -> str | None:
+    """Find the migrations directory for the given backend.
 
     Checks two locations:
-    1. Local repo: ./kanban_mcp/migrations (when run from repo root)
-    2. Package install: alongside this file at kanban_mcp/migrations
+    1. Local repo: ./kanban_mcp/migrations/{backend_type}
+    2. Package install: alongside this file at
+       kanban_mcp/migrations/{backend_type}
+
+    Falls back to the flat migrations/ directory for backwards compatibility.
     """
-    # Local repo check
-    local = Path.cwd() / "kanban_mcp" / "migrations"
+    # Local repo check — new structure
+    local = Path.cwd() / "kanban_mcp" / "migrations" / backend_type
     if local.is_dir() and list(local.glob("0*.sql")):
         return str(local)
 
-    # Package install check
-    package = Path(__file__).parent / "migrations"
+    # Package install check — new structure
+    package = Path(__file__).parent / "migrations" / backend_type
     if package.is_dir() and list(package.glob("0*.sql")):
         return str(package)
+
+    # Fallback: flat migrations/ directory (backwards compat)
+    local_flat = Path.cwd() / "kanban_mcp" / "migrations"
+    if local_flat.is_dir() and list(local_flat.glob("0*.sql")):
+        return str(local_flat)
+
+    package_flat = Path(__file__).parent / "migrations"
+    if package_flat.is_dir() and list(package_flat.glob("0*.sql")):
+        return str(package_flat)
 
     return None
 

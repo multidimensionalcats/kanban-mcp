@@ -14,9 +14,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from pathlib import Path
-from contextlib import contextmanager
-
-from mysql.connector.pooling import MySQLConnectionPool
+from kanban_mcp.db import create_backend
 try:
     import numpy as np
 except ImportError:
@@ -59,9 +57,6 @@ _tokenizer = None
 class KanbanDB:
     """Database operations for kanban system."""
 
-    # Predefined color palette for auto-assignment to tags
-    _pool_counter = 0
-
     TAG_COLOR_PALETTE = [
         '#4ade80',  # Green
         '#60a5fa',  # Blue
@@ -79,86 +74,26 @@ class KanbanDB:
 
     def __init__(self, host: str = None, user: str = None,
                  password: str = None, database: str = None,
-                 pool_size: int = None, port: int = None):
-        resolved_user = user or os.environ.get("KANBAN_DB_USER", "")
-        resolved_password = password or os.environ.get(
-            "KANBAN_DB_PASSWORD", "")
-        resolved_database = database or os.environ.get("KANBAN_DB_NAME", "")
+                 pool_size: int = None, port: int = None,
+                 backend=None):
+        if backend is not None:
+            self._backend = backend
+        else:
+            self._backend = create_backend(
+                host=host, user=user, password=password,
+                database=database, pool_size=pool_size, port=port)
+        self.config = self._backend.config
 
-        missing = []
-        if not resolved_user:
-            missing.append("KANBAN_DB_USER")
-        if not resolved_password:
-            missing.append("KANBAN_DB_PASSWORD")
-        if not resolved_database:
-            missing.append("KANBAN_DB_NAME")
-        if missing:
-            raise ValueError(
-                "Missing required database credentials:"
-                f" {', '.join(missing)}. "
-                "Set them as environment variables or "
-                "pass to constructor."
-            )
+    def _sql(self, query: str) -> str:
+        """Translate %s placeholders to backend's native placeholder."""
+        if self._backend.placeholder == '%s':
+            return query
+        return query.replace('%s', self._backend.placeholder)
 
-        resolved_port = port or int(
-            os.environ.get("KANBAN_DB_PORT", "3306"))
-
-        self.config = {
-            "host": host or os.environ.get("KANBAN_DB_HOST", "localhost"),
-            "port": resolved_port,
-            "user": resolved_user,
-            "password": resolved_password,
-            "database": resolved_database,
-        }
-        if pool_size is None:
-            pool_size = int(os.environ.get("KANBAN_DB_POOL_SIZE", "5"))
-
-        KanbanDB._pool_counter += 1
-        self._pool = MySQLConnectionPool(
-            pool_name=f"kanban_pool_{KanbanDB._pool_counter}",
-            pool_size=pool_size,
-            **self.config
-        )
-
-    def _get_connection(self):
-        """Get a database connection from the pool."""
-        return self._pool.get_connection()
-
-    @contextmanager
     def _db_cursor(self, dictionary: bool = False, commit: bool = False):
-        """Context manager for database cursor with automatic cleanup.
-
-        Args:
-            dictionary: If True, return rows as dicts. If False, return tuples.
-            commit: If True, commit transaction on successful exit.
-
-        Yields:
-            cursor: MySQL cursor object
-
-        Example:
-            # Read operation
-            with self._db_cursor(dictionary=True) as cursor:
-                cursor.execute("SELECT * FROM items WHERE id = %s", (item_id,))
-                return cursor.fetchone()
-
-            # Write operation
-            with self._db_cursor(commit=True) as cursor:
-                cursor.execute("INSERT INTO items ...", params)
-                item_id = cursor.lastrowid
-        """
-        conn = self._get_connection()
-        cursor = conn.cursor(dictionary=dictionary)
-        try:
-            yield cursor
-            if commit:
-                conn.commit()
-        except Exception:
-            if commit:
-                conn.rollback()
-            raise
-        finally:
-            cursor.close()
-            conn.close()
+        """Context manager for database cursor — delegates to backend."""
+        return self._backend.db_cursor(
+            dictionary=dictionary, commit=commit)
 
     def _safe_embedding_op(self, op: str, source_type: str, source_id: int):
         """Run embedding op with debug logging on failure."""
@@ -188,9 +123,10 @@ class KanbanDB:
 
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "INSERT IGNORE INTO projects"
-                " (id, directory_path, name)"
-                " VALUES (%s, %s, %s)",
+                self._sql(
+                    f"{self._backend.insert_ignore} INTO projects"
+                    " (id, directory_path, name)"
+                    " VALUES (%s, %s, %s)"),
                 (project_id, resolved, name))
             return project_id
 
@@ -199,21 +135,25 @@ class KanbanDB:
         project_id = self.hash_project_path(directory_path)
         with self._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT * FROM projects WHERE id = %s", (project_id,))
+                self._sql("SELECT * FROM projects WHERE id = %s"),
+                (project_id,))
             return cursor.fetchone()
 
     def get_project_by_id(self, project_id: str) -> Optional[Dict]:
         """Get project by ID."""
         with self._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT * FROM projects WHERE id = %s", (project_id,))
+                self._sql("SELECT * FROM projects WHERE id = %s"),
+                (project_id,))
             return cursor.fetchone()
 
     def get_type_id(self, type_name: str) -> int:
         """Get item_type id by name."""
         with self._db_cursor() as cursor:
             cursor.execute(
-                "SELECT id FROM item_types WHERE name = %s", (type_name,))
+                self._sql(
+                    "SELECT id FROM item_types WHERE name = %s"),
+                (type_name,))
             result = cursor.fetchone()
             if result:
                 return result[0]
@@ -223,7 +163,9 @@ class KanbanDB:
         """Get status id by name."""
         with self._db_cursor() as cursor:
             cursor.execute(
-                "SELECT id FROM statuses WHERE name = %s", (status_name,))
+                self._sql(
+                    "SELECT id FROM statuses WHERE name = %s"),
+                (status_name,))
             result = cursor.fetchone()
             if result:
                 return result[0]
@@ -233,10 +175,11 @@ class KanbanDB:
         """Get the first status in workflow for a type."""
         with self._db_cursor() as cursor:
             cursor.execute(
-                "SELECT status_id"
-                " FROM type_status_workflow"
-                " WHERE type_id = %s"
-                " ORDER BY sequence LIMIT 1",
+                self._sql(
+                    "SELECT status_id"
+                    " FROM type_status_workflow"
+                    " WHERE type_id = %s"
+                    " ORDER BY sequence LIMIT 1"),
                 (type_id,))
             result = cursor.fetchone()
             if result:
@@ -271,13 +214,13 @@ class KanbanDB:
 
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                """INSERT INTO items
+                self._sql("""INSERT INTO items
                 (project_id, type_id, status_id,
                  title, description, priority,
                  complexity, parent_id)
                 VALUES
                 (%s, %s, %s, %s,
-                 %s, %s, %s, %s)""",
+                 %s, %s, %s, %s)"""),
                 (project_id, type_id,
                  status_id, title,
                  description, priority,
@@ -296,7 +239,7 @@ class KanbanDB:
     def get_item(self, item_id: int) -> Optional[Dict]:
         """Get item with type and status names."""
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT i.*,
                     it.name as type_name,
                     s.name as status_name,
@@ -306,7 +249,7 @@ class KanbanDB:
                 JOIN statuses s ON i.status_id = s.id
                 JOIN projects p ON i.project_id = p.id
                 WHERE i.id = %s
-            """, (item_id,))
+            """), (item_id,))
             result = cursor.fetchone()
             # Ensure parent_id is included (may be NULL)
             if result and 'parent_id' not in result:
@@ -395,7 +338,7 @@ class KanbanDB:
             query += " ORDER BY i.priority ASC, i.created_at DESC LIMIT %s"
             params.append(limit)
 
-            cursor.execute(query, params)
+            cursor.execute(self._sql(query), params)
             return cursor.fetchall()
 
     def _record_status_change(self, item_id: int, old_status_id: Optional[int],
@@ -403,10 +346,10 @@ class KanbanDB:
         """Record a status change in status_history table."""
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                """INSERT INTO status_history
+                self._sql("""INSERT INTO status_history
                 (item_id, old_status_id,
                  new_status_id, change_type)
-                VALUES (%s, %s, %s, %s)""",
+                VALUES (%s, %s, %s, %s)"""),
                 (item_id, old_status_id, new_status_id, change_type))
 
     def get_status_history(self, item_id: int) -> List[Dict]:
@@ -419,7 +362,7 @@ class KanbanDB:
         changed_at
         """
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT sh.id, sh.item_id,
                        os.name as old_status, ns.name as new_status,
                        sh.change_type, sh.changed_at
@@ -428,7 +371,7 @@ class KanbanDB:
                 JOIN statuses ns ON sh.new_status_id = ns.id
                 WHERE sh.item_id = %s
                 ORDER BY sh.changed_at ASC, sh.id ASC
-            """, (item_id,))
+            """), (item_id,))
             return cursor.fetchall()
 
     def get_item_metrics(self, item_id: int) -> Optional[Dict]:
@@ -564,23 +507,23 @@ class KanbanDB:
 
         # Get current and next status from workflow
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT tsw.sequence, tsw.status_id
                 FROM type_status_workflow tsw
                 WHERE tsw.type_id = %s AND tsw.status_id = %s
-            """, (item['type_id'], item['status_id']))
+            """), (item['type_id'], item['status_id']))
             current = cursor.fetchone()
 
             if not current:
                 raise ValueError("Current status not in workflow")
 
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT tsw.status_id, s.name as status_name
                 FROM type_status_workflow tsw
                 JOIN statuses s ON tsw.status_id = s.id
                 WHERE tsw.type_id = %s AND tsw.sequence > %s
                 ORDER BY tsw.sequence LIMIT 1
-            """, (item['type_id'], current['sequence']))
+            """), (item['type_id'], current['sequence']))
             next_status = cursor.fetchone()
 
         if not next_status:
@@ -597,7 +540,7 @@ class KanbanDB:
         # Perform the update
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "UPDATE items SET status_id = %s WHERE id = %s",
+                self._sql("UPDATE items SET status_id = %s WHERE id = %s"),
                 (next_status['status_id'], item_id)
             )
 
@@ -629,23 +572,23 @@ class KanbanDB:
 
         # Get current and previous status from workflow
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT tsw.sequence, tsw.status_id
                 FROM type_status_workflow tsw
                 WHERE tsw.type_id = %s AND tsw.status_id = %s
-            """, (item['type_id'], item['status_id']))
+            """), (item['type_id'], item['status_id']))
             current = cursor.fetchone()
 
             if not current:
                 raise ValueError("Current status not in workflow")
 
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT tsw.status_id, s.name as status_name
                 FROM type_status_workflow tsw
                 JOIN statuses s ON tsw.status_id = s.id
                 WHERE tsw.type_id = %s AND tsw.sequence < %s
                 ORDER BY tsw.sequence DESC LIMIT 1
-            """, (item['type_id'], current['sequence']))
+            """), (item['type_id'], current['sequence']))
             prev_status = cursor.fetchone()
 
         if not prev_status:
@@ -657,7 +600,7 @@ class KanbanDB:
         # Perform the update
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "UPDATE items SET status_id = %s WHERE id = %s",
+                self._sql("UPDATE items SET status_id = %s WHERE id = %s"),
                 (prev_status['status_id'], item_id)
             )
 
@@ -684,10 +627,10 @@ class KanbanDB:
 
         # Validate status is valid for this item type
         with self._db_cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT 1 FROM type_status_workflow
                 WHERE type_id = %s AND status_id = %s
-            """, (item['type_id'], status_id))
+            """), (item['type_id'], status_id))
             if not cursor.fetchone():
                 raise ValueError(
                     f"Status '{status_name}' not valid"
@@ -702,17 +645,19 @@ class KanbanDB:
         with self._db_cursor(commit=True) as cursor:
             if status_name in ('done', 'closed'):
                 cursor.execute(
-                    "UPDATE items"
-                    " SET status_id = %s,"
-                    " closed_at = NOW()"
-                    " WHERE id = %s",
+                    self._sql(
+                        "UPDATE items"
+                        " SET status_id = %s,"
+                        " closed_at = NOW()"
+                        " WHERE id = %s"),
                     (status_id, item_id))
             else:
                 cursor.execute(
-                    "UPDATE items"
-                    " SET status_id = %s,"
-                    " closed_at = NULL"
-                    " WHERE id = %s",
+                    self._sql(
+                        "UPDATE items"
+                        " SET status_id = %s,"
+                        " closed_at = NULL"
+                        " WHERE id = %s"),
                     (status_id, item_id))
 
         # Record status change in history
@@ -742,21 +687,22 @@ class KanbanDB:
 
         # Get final status and perform update
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT s.id, s.name
                 FROM type_status_workflow tsw
                 JOIN statuses s ON tsw.status_id = s.id
                 WHERE tsw.type_id = %s
                 ORDER BY tsw.sequence DESC LIMIT 1
-            """, (item['type_id'],))
+            """), (item['type_id'],))
             final_status = cursor.fetchone()
 
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "UPDATE items"
-                " SET status_id = %s,"
-                " closed_at = NOW()"
-                " WHERE id = %s",
+                self._sql(
+                    "UPDATE items"
+                    " SET status_id = %s,"
+                    " closed_at = NOW()"
+                    " WHERE id = %s"),
                 (final_status['id'], item_id)
             )
 
@@ -782,7 +728,9 @@ class KanbanDB:
         self._safe_embedding_op('delete_embedding', 'item', item_id)
 
         with self._db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM items WHERE id = %s", (item_id,))
+            cursor.execute(
+                self._sql("DELETE FROM items WHERE id = %s"),
+                (item_id,))
             return {
                 "success": True,
                 "deleted_id": item_id,
@@ -835,7 +783,7 @@ class KanbanDB:
                 f"{', '.join(updates)} WHERE id = %s"
             )
             params.append(item_id)
-            cursor.execute(query, params)
+            cursor.execute(self._sql(query), params)
 
         # Re-embed if title or description changed
         if title is not None or description is not None:
@@ -849,7 +797,9 @@ class KanbanDB:
         """Add an update, optionally linked to items. Returns update id."""
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "INSERT INTO updates (project_id, content) VALUES (%s, %s)",
+                self._sql(
+                    "INSERT INTO updates"
+                    " (project_id, content) VALUES (%s, %s)"),
                 (project_id, content)
             )
             update_id = cursor.lastrowid
@@ -857,9 +807,10 @@ class KanbanDB:
             if item_ids:
                 for item_id in item_ids:
                     cursor.execute(
-                        "INSERT INTO update_items"
-                        " (update_id, item_id)"
-                        " VALUES (%s, %s)",
+                        self._sql(
+                            "INSERT INTO update_items"
+                            " (update_id, item_id)"
+                            " VALUES (%s, %s)"),
                         (update_id, item_id))
 
         # Auto-generate embedding
@@ -870,7 +821,7 @@ class KanbanDB:
     def get_latest_update(self, project_id: str) -> Optional[Dict]:
         """Get most recent update for a project."""
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT u.*, GROUP_CONCAT(ui.item_id) as item_ids
                 FROM updates u
                 LEFT JOIN update_items ui ON u.id = ui.update_id
@@ -878,7 +829,7 @@ class KanbanDB:
                 GROUP BY u.id
                 ORDER BY u.id DESC
                 LIMIT 1
-            """, (project_id,))
+            """), (project_id,))
             result = cursor.fetchone()
             if result and result['item_ids']:
                 result['item_ids'] = [
@@ -888,7 +839,7 @@ class KanbanDB:
     def get_updates(self, project_id: str, limit: int = 20) -> List[Dict]:
         """Get recent updates for a project."""
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT u.*, GROUP_CONCAT(ui.item_id) as item_ids
                 FROM updates u
                 LEFT JOIN update_items ui ON u.id = ui.update_id
@@ -896,7 +847,7 @@ class KanbanDB:
                 GROUP BY u.id
                 ORDER BY u.id DESC
                 LIMIT %s
-            """, (project_id, limit))
+            """), (project_id, limit))
             results = cursor.fetchall()
             for r in results:
                 if r['item_ids']:
@@ -906,7 +857,7 @@ class KanbanDB:
     def project_summary(self, project_id: str) -> Dict:
         """Get summary counts by type and status for a project."""
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT it.name as type_name,
                     s.name as status_name,
                     COUNT(*) as count
@@ -916,7 +867,7 @@ class KanbanDB:
                 WHERE i.project_id = %s
                 GROUP BY it.name, s.name
                 ORDER BY it.name, s.name
-            """, (project_id,))
+            """), (project_id,))
 
             results = cursor.fetchall()
             summary = {}
@@ -964,13 +915,13 @@ class KanbanDB:
 
         try:
             with self._db_cursor(commit=True) as cursor:
-                cursor.execute("""
+                cursor.execute(self._sql("""
                     INSERT INTO item_relationships
                     (source_item_id,
                      target_item_id,
                      relationship_type)
                     VALUES (%s, %s, %s)
-                """, (source_id, target_id, relationship_type))
+                """), (source_id, target_id, relationship_type))
                 return {
                     "success": True,
                     "relationship_id": cursor.lastrowid,
@@ -992,12 +943,12 @@ class KanbanDB:
             relationship_type: str) -> Dict:
         """Remove a relationship between two items."""
         with self._db_cursor(commit=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 DELETE FROM item_relationships
                 WHERE source_item_id = %s
                   AND target_item_id = %s
                   AND relationship_type = %s
-            """, (source_id, target_id, relationship_type))
+            """), (source_id, target_id, relationship_type))
             return {
                 "success": cursor.rowcount > 0,
                 "rows_affected": cursor.rowcount
@@ -1007,7 +958,7 @@ class KanbanDB:
         """Get all relationships for an item (both directions)."""
         with self._db_cursor(dictionary=True) as cursor:
             # Relationships where this item is the source
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT r.id,
                     r.relationship_type,
                     r.target_item_id
@@ -1021,11 +972,11 @@ class KanbanDB:
                 JOIN items i ON r.target_item_id = i.id
                 JOIN statuses s ON i.status_id = s.id
                 WHERE r.source_item_id = %s
-            """, (item_id,))
+            """), (item_id,))
             outgoing = cursor.fetchall()
 
             # Relationships where this item is the target
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT r.id,
                     r.relationship_type,
                     r.source_item_id
@@ -1039,7 +990,7 @@ class KanbanDB:
                 JOIN items i ON r.source_item_id = i.id
                 JOIN statuses s ON i.status_id = s.id
                 WHERE r.target_item_id = %s
-            """, (item_id,))
+            """), (item_id,))
             incoming = cursor.fetchall()
 
             return {
@@ -1064,7 +1015,7 @@ class KanbanDB:
           AND are not done/closed
         """
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT DISTINCT i.id, i.title,
                     s.name as status,
                     'blocks' as reason
@@ -1086,7 +1037,7 @@ class KanbanDB:
                 WHERE r.source_item_id = %s
                   AND r.relationship_type = 'depends_on'
                   AND s.name NOT IN ('done', 'closed')
-            """, (item_id, item_id))
+            """), (item_id, item_id))
             return cursor.fetchall()
 
     # --- Epic/Hierarchy Methods ---
@@ -1098,7 +1049,7 @@ class KanbanDB:
         Limited to depth 10 to prevent infinite loops.
         """
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 WITH RECURSIVE descendants AS (
                     SELECT i.id, i.parent_id, s.name as status_name, 0 as depth
                     FROM items i
@@ -1113,20 +1064,20 @@ class KanbanDB:
                     WHERE d.depth < 10
                 )
                 SELECT * FROM descendants
-            """, (item_id,))
+            """), (item_id,))
             return cursor.fetchall()
 
     def get_children(self, item_id: int) -> List[Dict]:
         """Get direct children of an item (not recursive)."""
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT i.*, it.name as type_name, s.name as status_name
                 FROM items i
                 JOIN item_types it ON i.type_id = it.id
                 JOIN statuses s ON i.status_id = s.id
                 WHERE i.parent_id = %s
                 ORDER BY i.priority, i.id
-            """, (item_id,))
+            """), (item_id,))
             return cursor.fetchall()
 
     def get_epic_progress(self, item_id: int) -> Dict:
@@ -1201,7 +1152,7 @@ class KanbanDB:
 
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "UPDATE items SET parent_id = %s WHERE id = %s",
+                self._sql("UPDATE items SET parent_id = %s WHERE id = %s"),
                 (parent_id, item_id)
             )
 
@@ -1274,7 +1225,9 @@ class KanbanDB:
                 new_status_id = self.get_status_id('review')
                 with self._db_cursor(commit=True) as cursor:
                     cursor.execute(
-                        "UPDATE items SET status_id = %s WHERE id = %s",
+                        self._sql(
+                            "UPDATE items SET status_id = %s"
+                            " WHERE id = %s"),
                         (new_status_id, parent['id'])
                     )
                 self._record_status_change(
@@ -1313,7 +1266,7 @@ class KanbanDB:
         """Get next color from palette using round-robin based on tag count."""
         with self._db_cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) FROM tags WHERE project_id = %s",
+                self._sql("SELECT COUNT(*) FROM tags WHERE project_id = %s"),
                 (project_id,)
             )
             result = cursor.fetchone()
@@ -1329,7 +1282,9 @@ class KanbanDB:
         # Check if tag exists
         with self._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT id FROM tags WHERE project_id = %s AND name = %s",
+                self._sql(
+                    "SELECT id FROM tags"
+                    " WHERE project_id = %s AND name = %s"),
                 (project_id, name)
             )
             result = cursor.fetchone()
@@ -1343,8 +1298,9 @@ class KanbanDB:
         try:
             with self._db_cursor(commit=True) as cursor:
                 cursor.execute(
-                    "INSERT INTO tags (project_id, name, color)"
-                    " VALUES (%s, %s, %s)",
+                    self._sql(
+                        "INSERT INTO tags (project_id, name, color)"
+                        " VALUES (%s, %s, %s)"),
                     (project_id, name, color))
                 return cursor.lastrowid
         except Exception as e:
@@ -1352,8 +1308,9 @@ class KanbanDB:
                 # Race condition: tag created by concurrent request
                 with self._db_cursor(dictionary=True) as cursor:
                     cursor.execute(
-                        "SELECT id FROM tags"
-                        " WHERE project_id = %s AND name = %s",
+                        self._sql(
+                            "SELECT id FROM tags"
+                            " WHERE project_id = %s AND name = %s"),
                         (project_id, name))
                     result = cursor.fetchone()
                     if result:
@@ -1363,20 +1320,22 @@ class KanbanDB:
     def get_tag(self, tag_id: int) -> Optional[Dict]:
         """Get tag by ID."""
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("SELECT * FROM tags WHERE id = %s", (tag_id,))
+            cursor.execute(
+                self._sql("SELECT * FROM tags WHERE id = %s"),
+                (tag_id,))
             return cursor.fetchone()
 
     def get_project_tags(self, project_id: str) -> List[Dict]:
         """Get all tags for a project with usage counts, ordered by name."""
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT t.*, COUNT(it.item_id) as count
                 FROM tags t
                 LEFT JOIN item_tags it ON t.id = it.tag_id
                 WHERE t.project_id = %s
                 GROUP BY t.id
                 ORDER BY t.name
-            """, (project_id,))
+            """), (project_id,))
             return cursor.fetchall()
 
     def update_tag(
@@ -1420,7 +1379,7 @@ class KanbanDB:
                     f"{', '.join(updates)} WHERE id = %s"
                 )
                 params.append(tag_id)
-                cursor.execute(query, params)
+                cursor.execute(self._sql(query), params)
             return {"success": True, "tag": self.get_tag(tag_id)}
         except Exception as e:
             if "Duplicate entry" in str(e):
@@ -1432,7 +1391,9 @@ class KanbanDB:
     def delete_tag(self, tag_id: int) -> Dict:
         """Delete tag and all item associations (cascades via FK)."""
         with self._db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM tags WHERE id = %s", (tag_id,))
+            cursor.execute(
+                self._sql("DELETE FROM tags WHERE id = %s"),
+                (tag_id,))
             return {
                 "success": cursor.rowcount > 0,
                 "deleted_id": tag_id,
@@ -1452,7 +1413,9 @@ class KanbanDB:
         try:
             with self._db_cursor(commit=True) as cursor:
                 cursor.execute(
-                    "INSERT INTO item_tags (item_id, tag_id) VALUES (%s, %s)",
+                    self._sql(
+                        "INSERT INTO item_tags"
+                        " (item_id, tag_id) VALUES (%s, %s)"),
                     (item_id, tag_id)
                 )
             return {
@@ -1472,7 +1435,9 @@ class KanbanDB:
         """Remove a tag from an item."""
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "DELETE FROM item_tags WHERE item_id = %s AND tag_id = %s",
+                self._sql(
+                    "DELETE FROM item_tags"
+                    " WHERE item_id = %s AND tag_id = %s"),
                 (item_id, tag_id)
             )
             return {
@@ -1483,13 +1448,13 @@ class KanbanDB:
     def get_item_tags(self, item_id: int) -> List[Dict]:
         """Get all tags for an item."""
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT t.id, t.name, t.color
                 FROM tags t
                 JOIN item_tags it ON t.id = it.tag_id
                 WHERE it.item_id = %s
                 ORDER BY t.name
-            """, (item_id,))
+            """), (item_id,))
             return cursor.fetchall()
 
     # --- Search Methods ---
@@ -1508,72 +1473,7 @@ class KanbanDB:
             Items include: id, title, snippet, score, type_name, status_name
             Updates include: id, snippet, score, created_at
         """
-        items = []
-        updates = []
-
-        # Use BOOLEAN MODE if query contains wildcard, otherwise NATURAL
-        # LANGUAGE
-        use_boolean = '*' in query
-        mode = 'IN BOOLEAN MODE' if use_boolean else 'IN NATURAL LANGUAGE MODE'
-
-        with self._db_cursor(dictionary=True) as cursor:
-            # Search items (title and description)
-            cursor.execute(f"""
-                SELECT i.id, i.title, i.description,
-                       it.name as type_name, s.name as status_name,
-                       MATCH(i.title, i.description)
-                       AGAINST(%s {mode}) as score
-                FROM items i
-                JOIN item_types it ON i.type_id = it.id
-                JOIN statuses s ON i.status_id = s.id
-                WHERE i.project_id = %s
-                  AND MATCH(i.title, i.description) AGAINST(%s {mode})
-                ORDER BY score DESC
-                LIMIT %s
-            """, (query, project_id, query, limit))  # nosec B608
-
-            for row in cursor.fetchall():
-                # Create snippet from title or description
-                snippet = row['title']
-                if row['description']:
-                    snippet = row['description'][:100] + \
-                        ('...' if len(row['description']) > 100 else '')
-
-                items.append({
-                    'id': row['id'],
-                    'title': row['title'],
-                    'snippet': snippet,
-                    'score': float(row['score']),
-                    'type_name': row['type_name'],
-                    'status_name': row['status_name']
-                })
-
-            # Search updates (content)
-            cursor.execute(f"""
-                SELECT u.id, u.content, u.created_at,
-                       MATCH(u.content) AGAINST(%s {mode}) as score
-                FROM updates u
-                WHERE u.project_id = %s
-                  AND MATCH(u.content) AGAINST(%s {mode})
-                ORDER BY score DESC
-                LIMIT %s
-            """, (query, project_id, query, limit))  # nosec B608
-
-            for row in cursor.fetchall():
-                snippet = row['content'][:100] + \
-                    ('...' if len(row['content']) > 100 else '')
-                updates.append({
-                    'id': row['id'],
-                    'snippet': snippet,
-                    'score': float(row['score']),
-                    'created_at': row['created_at']
-                })
-
-        return {
-            'items': items,
-            'updates': updates,
-            'total_count': len(items) + len(updates)
-        }
+        return self._backend.search_fulltext(project_id, query, limit)
 
     # --- File Linking Methods ---
 
@@ -1599,17 +1499,19 @@ class KanbanDB:
         """
         with self._db_cursor(dictionary=True, commit=True) as cursor:
             # Verify item exists
-            cursor.execute("SELECT id FROM items WHERE id = %s", (item_id,))
+            cursor.execute(
+                self._sql("SELECT id FROM items WHERE id = %s"),
+                (item_id,))
             if not cursor.fetchone():
                 raise ValueError(f"Item {item_id} not found")
 
             # Check for duplicate link
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT id FROM item_files
                 WHERE item_id = %s AND file_path = %s
                   AND (line_start IS NULL AND %s IS NULL OR line_start = %s)
                   AND (line_end IS NULL AND %s IS NULL OR line_end = %s)
-            """, (
+            """), (
                 item_id, file_path,
                 line_start, line_start,
                 line_end, line_end))
@@ -1621,11 +1523,11 @@ class KanbanDB:
                     'this file and line range'}
 
             # Insert new link
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 INSERT INTO item_files
                     (item_id, file_path, line_start, line_end)
                 VALUES (%s, %s, %s, %s)
-            """, (item_id, file_path, line_start, line_end))
+            """), (item_id, file_path, line_start, line_end))
 
             link_id = cursor.lastrowid
             return {'success': True, 'link_id': link_id}
@@ -1648,12 +1550,12 @@ class KanbanDB:
             Dict with success status
         """
         with self._db_cursor(commit=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 DELETE FROM item_files
                 WHERE item_id = %s AND file_path = %s
                   AND (line_start IS NULL AND %s IS NULL OR line_start = %s)
                   AND (line_end IS NULL AND %s IS NULL OR line_end = %s)
-            """, (
+            """), (
                 item_id, file_path,
                 line_start, line_start,
                 line_end, line_end))
@@ -1672,12 +1574,12 @@ class KanbanDB:
             List of dicts with file_path, line_start, line_end, created_at
         """
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT id, file_path, line_start, line_end, created_at
                 FROM item_files
                 WHERE item_id = %s
                 ORDER BY file_path, line_start
-            """, (item_id,))
+            """), (item_id,))
             return cursor.fetchall()
 
     # --- Decision History Methods ---
@@ -1722,17 +1624,19 @@ class KanbanDB:
 
         with self._db_cursor(dictionary=True, commit=True) as cursor:
             # Verify item exists
-            cursor.execute("SELECT id FROM items WHERE id = %s", (item_id,))
+            cursor.execute(
+                self._sql("SELECT id FROM items WHERE id = %s"),
+                (item_id,))
             if not cursor.fetchone():
                 raise ValueError(f"Item {item_id} not found")
 
             # Insert decision
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 INSERT INTO item_decisions
                     (item_id, choice,
                      rejected_alternatives, rationale)
                 VALUES (%s, %s, %s, %s)
-            """, (item_id, choice, rejected_alternatives, rationale))
+            """), (item_id, choice, rejected_alternatives, rationale))
 
             decision_id = cursor.lastrowid
 
@@ -1752,14 +1656,14 @@ class KanbanDB:
             rejected_alternatives, rationale, created_at
         """
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT id, item_id, choice,
                     rejected_alternatives,
                     rationale, created_at
                 FROM item_decisions
                 WHERE item_id = %s
                 ORDER BY created_at DESC, id DESC
-            """, (item_id,))
+            """), (item_id,))
             return cursor.fetchall()
 
     def delete_decision(self, decision_id: int) -> Dict[str, Any]:
@@ -1776,7 +1680,9 @@ class KanbanDB:
 
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "DELETE FROM item_decisions WHERE id = %s", (decision_id,))
+                self._sql(
+                    "DELETE FROM item_decisions WHERE id = %s"),
+                (decision_id,))
             if cursor.rowcount > 0:
                 return {'success': True, 'deleted_id': decision_id}
             return {'success': False, 'error': 'Decision not found'}
@@ -1914,9 +1820,10 @@ class KanbanDB:
         elif source_type == 'decision':
             with self._db_cursor(dictionary=True) as cursor:
                 cursor.execute(
-                    "SELECT choice, rejected_alternatives,"
-                    " rationale FROM item_decisions"
-                    " WHERE id = %s",
+                    self._sql(
+                        "SELECT choice, rejected_alternatives,"
+                        " rationale FROM item_decisions"
+                        " WHERE id = %s"),
                     (source_id,))
                 decision = cursor.fetchone()
                 if not decision:
@@ -1932,7 +1839,10 @@ class KanbanDB:
         elif source_type == 'update':
             with self._db_cursor(dictionary=True) as cursor:
                 cursor.execute(
-                    "SELECT content FROM updates WHERE id = %s", (source_id,))
+                    self._sql(
+                        "SELECT content FROM updates"
+                        " WHERE id = %s"),
+                    (source_id,))
                 update = cursor.fetchone()
                 if not update:
                     return None
@@ -1974,10 +1884,10 @@ class KanbanDB:
 
         # Check if embedding exists and is current
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT id, content_hash FROM embeddings
                 WHERE source_type = %s AND source_id = %s AND model = %s
-            """, (source_type, source_id, self.EMBEDDING_MODEL))
+            """), (source_type, source_id, self.EMBEDDING_MODEL))
             existing = cursor.fetchone()
 
         if existing and existing['content_hash'] == content_hash:
@@ -1997,24 +1907,24 @@ class KanbanDB:
         # Upsert into database
         with self._db_cursor(commit=True) as cursor:
             if existing:
-                cursor.execute("""
+                cursor.execute(self._sql("""
                     UPDATE embeddings
                     SET `vector` = %s,
                         content_hash = %s,
                         created_at = NOW()
                     WHERE id = %s
-                """, (vector, content_hash, existing['id']))
+                """), (vector, content_hash, existing['id']))
                 return {
                     'success': True,
                     'status': 'updated',
                     'embedding_id': existing['id']}
             else:
-                cursor.execute("""
+                cursor.execute(self._sql("""
                     INSERT INTO embeddings
                         (source_type, source_id,
                          content_hash, model, `vector`)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (
+                """), (
                     source_type, source_id, content_hash,
                     self.EMBEDDING_MODEL, vector))
                 return {
@@ -2038,13 +1948,13 @@ class KanbanDB:
             or None if not found
         """
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT id, source_type, source_id,
                     content_hash, model, `vector`,
                     created_at
                 FROM embeddings
                 WHERE source_type = %s AND source_id = %s AND model = %s
-            """, (source_type, source_id, self.EMBEDDING_MODEL))
+            """), (source_type, source_id, self.EMBEDDING_MODEL))
             return cursor.fetchone()
 
     def delete_embedding(self, source_type: str,
@@ -2059,10 +1969,10 @@ class KanbanDB:
             Dict with success status
         """
         with self._db_cursor(commit=True) as cursor:
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 DELETE FROM embeddings
                 WHERE source_type = %s AND source_id = %s AND model = %s
-            """, (source_type, source_id, self.EMBEDDING_MODEL))
+            """), (source_type, source_id, self.EMBEDDING_MODEL))
             if cursor.rowcount > 0:
                 return {'success': True}
             return {'success': False, 'error': 'Embedding not found'}
@@ -2138,7 +2048,7 @@ class KanbanDB:
         with self._db_cursor(dictionary=True) as cursor:
             for source_type in type_filter:
                 if source_type == 'item':
-                    cursor.execute("""
+                    cursor.execute(self._sql("""
                         SELECT e.id, e.source_type, e.source_id, e.`vector`,
                                i.title, i.description,
                                it.name as type_name,
@@ -2150,7 +2060,7 @@ class KanbanDB:
                         WHERE e.source_type = 'item'
                             AND e.model = %s
                             AND i.project_id = %s
-                    """, (self.EMBEDDING_MODEL, project_id))
+                    """), (self.EMBEDDING_MODEL, project_id))
 
                     for row in cursor.fetchall():
                         stored_vector = np.frombuffer(
@@ -2168,7 +2078,7 @@ class KanbanDB:
                                  'status_name': row['status_name']})
 
                 elif source_type == 'decision':
-                    cursor.execute("""
+                    cursor.execute(self._sql("""
                         SELECT e.id, e.source_type, e.source_id, e.`vector`,
                                d.choice, d.item_id
                         FROM embeddings e
@@ -2177,7 +2087,7 @@ class KanbanDB:
                         WHERE e.source_type = 'decision'
                             AND e.model = %s
                             AND i.project_id = %s
-                    """, (self.EMBEDDING_MODEL, project_id))
+                    """), (self.EMBEDDING_MODEL, project_id))
 
                     for row in cursor.fetchall():
                         stored_vector = np.frombuffer(
@@ -2193,7 +2103,7 @@ class KanbanDB:
                             })
 
                 elif source_type == 'update':
-                    cursor.execute("""
+                    cursor.execute(self._sql("""
                         SELECT e.id, e.source_type, e.source_id, e.`vector`,
                                u.content, u.created_at
                         FROM embeddings e
@@ -2201,7 +2111,7 @@ class KanbanDB:
                         WHERE e.source_type = 'update'
                             AND e.model = %s
                             AND u.project_id = %s
-                    """, (self.EMBEDDING_MODEL, project_id))
+                    """), (self.EMBEDDING_MODEL, project_id))
 
                     for row in cursor.fetchall():
                         stored_vector = np.frombuffer(
@@ -2248,18 +2158,18 @@ class KanbanDB:
                 project_id = item['project_id']
         elif source_type == 'decision':
             with self._db_cursor(dictionary=True) as cursor:
-                cursor.execute("""
+                cursor.execute(self._sql("""
                     SELECT i.project_id FROM item_decisions d
                     JOIN items i ON d.item_id = i.id
                     WHERE d.id = %s
-                """, (source_id,))
+                """), (source_id,))
                 row = cursor.fetchone()
                 if row:
                     project_id = row['project_id']
         elif source_type == 'update':
             with self._db_cursor(dictionary=True) as cursor:
                 cursor.execute(
-                    "SELECT project_id FROM updates WHERE id = %s",
+                    self._sql("SELECT project_id FROM updates WHERE id = %s"),
                     (source_id,))
                 row = cursor.fetchone()
                 if row:
@@ -2272,12 +2182,12 @@ class KanbanDB:
         results = []
         with self._db_cursor(dictionary=True) as cursor:
             # Items
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT e.source_type, e.source_id, e.`vector`, i.title
                 FROM embeddings e
                 JOIN items i ON e.source_id = i.id AND e.source_type = 'item'
                 WHERE e.model = %s AND i.project_id = %s
-            """, (self.EMBEDDING_MODEL, project_id))
+            """), (self.EMBEDDING_MODEL, project_id))
 
             for row in cursor.fetchall():
                 # Skip self
@@ -2295,7 +2205,7 @@ class KanbanDB:
                     })
 
             # Decisions
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT e.source_type, e.source_id,
                     e.`vector`, d.choice
                 FROM embeddings e
@@ -2305,7 +2215,7 @@ class KanbanDB:
                 JOIN items i ON d.item_id = i.id
                 WHERE e.model = %s
                     AND i.project_id = %s
-            """, (self.EMBEDDING_MODEL, project_id))
+            """), (self.EMBEDDING_MODEL, project_id))
 
             for row in cursor.fetchall():
                 if (row['source_type'] == source_type
@@ -2322,7 +2232,7 @@ class KanbanDB:
                     })
 
             # Updates
-            cursor.execute("""
+            cursor.execute(self._sql("""
                 SELECT e.source_type, e.source_id,
                     e.`vector`, u.content
                 FROM embeddings e
@@ -2331,7 +2241,7 @@ class KanbanDB:
                     AND e.source_type = 'update'
                 WHERE e.model = %s
                     AND u.project_id = %s
-            """, (self.EMBEDDING_MODEL, project_id))
+            """), (self.EMBEDDING_MODEL, project_id))
 
             for row in cursor.fetchall():
                 if (row['source_type'] == source_type
@@ -2361,7 +2271,7 @@ class KanbanDB:
             Tuple of (processed_count, error_list)
         """
         with self._db_cursor(dictionary=True) as cursor:
-            cursor.execute(query, params)
+            cursor.execute(self._sql(query), params)
             ids = [row['id'] for row in cursor.fetchall()]
         # Cursor/connection released before processing
         processed, errors = 0, []
