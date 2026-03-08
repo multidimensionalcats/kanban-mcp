@@ -400,7 +400,7 @@ function Start-DockerMysql {
 }
 
 function Invoke-DbSetup {
-    param([string]$Host_, [string]$Name, [string]$User, [string]$Password)
+    param([string]$Host_, [string]$Name, [string]$User, [string]$Password, [string]$Port = "3306")
 
     Write-Host "--- Running kanban-setup ---"
 
@@ -408,13 +408,14 @@ function Invoke-DbSetup {
     $env:KANBAN_DB_NAME = $Name
     $env:KANBAN_DB_USER = $User
     $env:KANBAN_DB_PASSWORD = $Password
+    $env:KANBAN_DB_PORT = $Port
     if (-not $env:MYSQL_ROOT_USER) { $env:MYSQL_ROOT_USER = "root" }
 
     kanban-setup --auto
 }
 
 function Write-EnvFile {
-    param([string]$Host_, [string]$User, [string]$Password, [string]$Name)
+    param([string]$Host_, [string]$User, [string]$Password, [string]$Name, [string]$Port = "3306")
 
     New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
     $envFile = Join-Path $ConfigDir ".env"
@@ -434,13 +435,17 @@ function Write-EnvFile {
     }
 
     if ($writeIt) {
-        @"
+        $content = @"
 # kanban-mcp database configuration
 KANBAN_DB_HOST=$Host_
 KANBAN_DB_USER=$User
 KANBAN_DB_PASSWORD=$Password
 KANBAN_DB_NAME=$Name
-"@ | Set-Content -Path $envFile -Encoding UTF8
+"@
+        if ($Port -ne "3306") {
+            $content += "`nKANBAN_DB_PORT=$Port"
+        }
+        $content | Set-Content -Path $envFile -Encoding UTF8
         Write-Host "Created $envFile"
     }
 }
@@ -614,7 +619,12 @@ switch ($MysqlMethod) {
             Write-Host "Error: No host provided." -ForegroundColor Red
             return
         }
-        Write-Host "Will connect to MySQL at $DbHost"
+        $DbPort = "3306"
+        if (-not $Auto) {
+            $portInput = Read-Host "MySQL port [$DbPort]"
+            if ($portInput) { $DbPort = $portInput }
+        }
+        Write-Host "Will connect to MySQL at ${DbHost}:${DbPort}"
     }
     "docker" {
         if (-not (Test-DockerAvailable)) {
@@ -634,6 +644,31 @@ if ($MysqlMethod -eq "docker") {
     $dbUser = if ($env:KANBAN_DB_USER) { $env:KANBAN_DB_USER } else { "kanban" }
     $dbPassword = if ($env:KANBAN_DB_PASSWORD) { $env:KANBAN_DB_PASSWORD } else { "changeme" }
     $DbHost = "localhost"
+    $DbPort = if ($env:KANBAN_DB_PORT) { $env:KANBAN_DB_PORT } else { "3306" }
+
+    # Check for port conflict before starting Docker MySQL
+    if (Test-MysqlRunning -Host_ $DbHost -Port ([int]$DbPort)) {
+        Write-Host "Warning: Port $DbPort is already in use on $DbHost." -ForegroundColor Yellow
+        if ($Auto) {
+            Write-Host "Set KANBAN_DB_PORT to use a different port."
+            return
+        }
+        $altPort = [int]$DbPort + 1
+        $useAlt = Read-Host "Use alternative port $altPort instead? [Y/n]"
+        if (-not $useAlt) { $useAlt = "Y" }
+        if ($useAlt -match "^[Yy]") {
+            $DbPort = "$altPort"
+            Write-Host "Using port $DbPort."
+        } else {
+            $customPort = Read-Host "Enter port number"
+            if (-not $customPort) {
+                Write-Host "No port specified. Aborting."
+                return
+            }
+            $DbPort = $customPort
+            Write-Host "Using port $DbPort."
+        }
+    }
 
     $dockerDir = Get-DockerFiles
     Write-Host ""
@@ -642,11 +677,12 @@ if ($MysqlMethod -eq "docker") {
     $env:KANBAN_DB_NAME = $dbName
     $env:KANBAN_DB_USER = $dbUser
     $env:KANBAN_DB_PASSWORD = $dbPassword
+    $env:KANBAN_DB_PORT = $DbPort
 
     Start-DockerMysql -DockerDir $dockerDir
     Write-Host ""
 
-    Write-EnvFile -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName
+    Write-EnvFile -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName -Port $DbPort
     Write-NextSteps -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName -IsDocker
 
     Write-Host "Docker compose files: $dockerDir"
@@ -707,7 +743,7 @@ if ($MysqlMethod -eq "docker") {
         }
     }
 
-    Invoke-DbSetup -Host_ $DbHost -Name $dbName -User $dbUser -Password $dbPassword
+    Invoke-DbSetup -Host_ $DbHost -Name $dbName -User $dbUser -Password $dbPassword -Port $(if ($DbPort) { $DbPort } else { "3306" })
 
     if ($WithSemantic) {
         Write-Host ""

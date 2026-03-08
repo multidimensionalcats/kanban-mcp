@@ -47,6 +47,14 @@ class TestArgParsing(unittest.TestCase):
         self.assertEqual(args.mysql_root_user, "admin")
         self.assertEqual(args.mysql_root_password, "rootpass")
 
+    def test_db_port_arg(self):
+        args = self.parser.parse_args(["--db-port", "3307"])
+        self.assertEqual(args.db_port, "3307")
+
+    def test_db_port_default_none(self):
+        args = self.parser.parse_args([])
+        self.assertIsNone(args.db_port)
+
     def test_defaults(self):
         args = self.parser.parse_args([])
         self.assertIsNone(args.db_name)
@@ -1530,6 +1538,213 @@ class TestLoggingBeforeAutoMigrate(unittest.TestCase):
             call_order.index("auto_migrate"),
             "logging.basicConfig must run before auto_migrate",
         )
+
+
+class TestPortConfig(unittest.TestCase):
+    """Test port resolution from env, CLI, and defaults."""
+
+    def test_port_from_env(self):
+        from kanban_mcp.setup import resolve_config, build_parser
+        parser = build_parser()
+        args = parser.parse_args(["--auto"])
+        with patch.dict(
+            os.environ,
+            {"KANBAN_DB_PORT": "3307"},
+            clear=False,
+        ):
+            config = resolve_config(args)
+        self.assertEqual(config["db_port"], "3307")
+
+    def test_port_default_3306(self):
+        from kanban_mcp.setup import resolve_config, build_parser
+        parser = build_parser()
+        args = parser.parse_args(["--auto"])
+        env_clear = {
+            "KANBAN_DB_PORT": "",
+        }
+        with patch.dict(os.environ, env_clear, clear=False):
+            os.environ.pop("KANBAN_DB_PORT", None)
+            config = resolve_config(args)
+        self.assertEqual(config["db_port"], "3306")
+
+    def test_cli_overrides_env(self):
+        from kanban_mcp.setup import resolve_config, build_parser
+        parser = build_parser()
+        args = parser.parse_args([
+            "--auto", "--db-port", "3308",
+        ])
+        with patch.dict(
+            os.environ,
+            {"KANBAN_DB_PORT": "3307"},
+            clear=False,
+        ):
+            config = resolve_config(args)
+        self.assertEqual(config["db_port"], "3308")
+
+
+class TestEnvFilePort(unittest.TestCase):
+    """Test .env file writing includes port when non-default."""
+
+    def test_port_included_when_non_default(self):
+        from kanban_mcp.setup import write_env_file
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = os.path.join(tmpdir, ".env")
+            write_env_file(
+                env_path,
+                db_host="localhost",
+                db_user="kanban",
+                db_password="secret",
+                db_name="kanban",
+                db_port="3307",
+            )
+            content = Path(env_path).read_text()
+            self.assertIn("KANBAN_DB_PORT=3307", content)
+
+    def test_port_omitted_when_default(self):
+        from kanban_mcp.setup import write_env_file
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = os.path.join(tmpdir, ".env")
+            write_env_file(
+                env_path,
+                db_host="localhost",
+                db_user="kanban",
+                db_password="secret",
+                db_name="kanban",
+                db_port="3306",
+            )
+            content = Path(env_path).read_text()
+            self.assertNotIn("KANBAN_DB_PORT", content)
+
+
+class TestKanbanDBPort(unittest.TestCase):
+    """Test KanbanDB port handling."""
+
+    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch.dict(os.environ, {
+        'KANBAN_DB_USER': 'test',
+        'KANBAN_DB_PASSWORD': 'test',
+        'KANBAN_DB_NAME': 'test',
+    })
+    def test_port_from_env_var(self, mock_pool):
+        from kanban_mcp.core import KanbanDB
+        with patch.dict(
+            os.environ,
+            {"KANBAN_DB_PORT": "3307"},
+            clear=False,
+        ):
+            db = KanbanDB()
+        self.assertEqual(db.config["port"], 3307)
+
+    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch.dict(os.environ, {
+        'KANBAN_DB_USER': 'test',
+        'KANBAN_DB_PASSWORD': 'test',
+        'KANBAN_DB_NAME': 'test',
+    })
+    def test_port_default_3306(self, mock_pool):
+        from kanban_mcp.core import KanbanDB
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("KANBAN_DB_PORT", None)
+            db = KanbanDB()
+        self.assertEqual(db.config["port"], 3306)
+
+    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch.dict(os.environ, {
+        'KANBAN_DB_USER': 'test',
+        'KANBAN_DB_PASSWORD': 'test',
+        'KANBAN_DB_NAME': 'test',
+    })
+    def test_port_constructor_param(self, mock_pool):
+        from kanban_mcp.core import KanbanDB
+        db = KanbanDB(port=3308)
+        self.assertEqual(db.config["port"], 3308)
+
+    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch.dict(os.environ, {
+        'KANBAN_DB_USER': 'test',
+        'KANBAN_DB_PASSWORD': 'test',
+        'KANBAN_DB_NAME': 'test',
+    })
+    def test_port_passed_to_pool(self, mock_pool):
+        from kanban_mcp.core import KanbanDB
+        KanbanDB(port=3307)
+        call_kwargs = mock_pool.call_args[1]
+        self.assertEqual(call_kwargs["port"], 3307)
+
+
+class TestMcpConfigPort(unittest.TestCase):
+    """Test mcp_config_json includes port when non-default."""
+
+    def test_port_included_when_non_default(self):
+        import json
+        from kanban_mcp.setup import mcp_config_json
+        result = mcp_config_json(
+            "localhost", "kanban", "pw", "kanban",
+            db_port="3307",
+        )
+        parsed = json.loads(result)
+        env = parsed["mcpServers"]["kanban"]["env"]
+        self.assertEqual(env["KANBAN_DB_PORT"], "3307")
+
+    def test_port_omitted_when_default(self):
+        import json
+        from kanban_mcp.setup import mcp_config_json
+        result = mcp_config_json(
+            "localhost", "kanban", "pw", "kanban",
+            db_port="3306",
+        )
+        parsed = json.loads(result)
+        env = parsed["mcpServers"]["kanban"]["env"]
+        self.assertNotIn("KANBAN_DB_PORT", env)
+
+
+class TestWebPortEnvVar(unittest.TestCase):
+    """Test kanban-web reads KANBAN_WEB_PORT env var."""
+
+    def _run_main_and_capture_port(self, cli_args=None):
+        """Run web main() with mocked app.run, return the port used."""
+        captured = {}
+
+        def fake_run(**kwargs):
+            captured.update(kwargs)
+
+        with patch("kanban_mcp.web.app") as mock_app:
+            mock_app.run = fake_run
+            # Force debug mode so it uses app.run, not gunicorn
+            with patch(
+                "sys.argv",
+                ["kanban-web", "--debug"]
+                + (cli_args or []),
+            ):
+                from kanban_mcp.web import main
+                main()
+        return captured.get("port")
+
+    def test_port_from_env(self):
+        with patch.dict(
+            os.environ,
+            {"KANBAN_WEB_PORT": "8080"},
+            clear=False,
+        ):
+            port = self._run_main_and_capture_port()
+            self.assertEqual(port, 8080)
+
+    def test_port_default_5000(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("KANBAN_WEB_PORT", None)
+            port = self._run_main_and_capture_port()
+            self.assertEqual(port, 5000)
+
+    def test_cli_overrides_env(self):
+        with patch.dict(
+            os.environ,
+            {"KANBAN_WEB_PORT": "8080"},
+            clear=False,
+        ):
+            port = self._run_main_and_capture_port(
+                ["--port", "9090"],
+            )
+            self.assertEqual(port, 9090)
 
 
 if __name__ == "__main__":

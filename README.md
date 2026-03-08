@@ -152,10 +152,7 @@ Prompts for database name, user, password, and MySQL/MariaDB root credentials (i
 The `--auto` flag skips all interactive prompts. Without it, `kanban-setup` will prompt for each value.
 
 ```bash
-# Minimal — uses socket auth for database root, auto-generates app password
-kanban-setup --auto
-
-# With root password (required if root uses password auth)
+# With root password (most common)
 kanban-setup --auto --mysql-root-password rootpass
 
 # With explicit credentials via environment variables
@@ -164,9 +161,12 @@ KANBAN_DB_NAME=kanban KANBAN_DB_USER=kanban KANBAN_DB_PASSWORD=secret \
 
 # With CLI args
 kanban-setup --auto --db-name mydb --db-user myuser --db-password secret
+
+# Socket auth (only works when OS user matches MySQL user, e.g. running as root)
+kanban-setup --auto
 ```
 
-> **Important:** `MYSQL_ROOT_PASSWORD` is **required** for non-interactive use unless you are running as OS root. Socket auth (`auth_socket`) only works when the OS user matches the MySQL user. On Debian/Ubuntu, MariaDB defaults root to `auth_socket` — set `MYSQL_ROOT_PASSWORD` or use the manual SQL setup below.
+> **Important:** `MYSQL_ROOT_PASSWORD` is **required** for non-interactive use unless you are running as OS root. Socket auth (`auth_socket`) only works when the OS user matches the MySQL user — this is uncommon outside of CI or Docker. On Debian/Ubuntu, MariaDB defaults root to `auth_socket` — set `MYSQL_ROOT_PASSWORD` or use the manual SQL setup below.
 
 ### Install script reference
 
@@ -193,6 +193,7 @@ MYSQL_ROOT_PASSWORD=rootpass ./install.sh --auto      # non-interactive, with ro
 | `KANBAN_DB_USER` | `kanban` | Database user |
 | `KANBAN_DB_PASSWORD` | *(auto-generated)* | Database password |
 | `KANBAN_DB_HOST` | `localhost` | Database host |
+| `KANBAN_DB_PORT` | `3306` | Database port |
 | `MYSQL_ROOT_USER` | `root` | Database admin user |
 | `MYSQL_ROOT_PASSWORD` | *(none — tries socket auth)* | Database admin password (**required** unless running as OS root) |
 
@@ -237,11 +238,14 @@ All install methods (pipx, pip, source) use this same location. You can also set
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `KANBAN_DB_HOST` | No | `localhost` | Database server host |
+| `KANBAN_DB_PORT` | No | `3306` | Database server port |
 | `KANBAN_DB_USER` | Yes | — | Database username |
 | `KANBAN_DB_PASSWORD` | Yes | — | Database password |
 | `KANBAN_DB_NAME` | Yes | — | Database name |
 | `KANBAN_DB_POOL_SIZE` | No | `5` | Connection pool size |
 | `KANBAN_PROJECT_DIR` | No | — | Override project directory detection |
+| `KANBAN_WEB_PORT` | No | `5000` | Web UI port (`kanban-web`) |
+| `KANBAN_WEB_HOST` | No | `127.0.0.1` | Web UI bind address (`kanban-web`) |
 
 ### MCP Client Setup
 
@@ -448,7 +452,10 @@ kanban-mcp provides three ways to interact with the same data:
 kanban-web                    # http://127.0.0.1:5000
 kanban-web --port 8080        # custom port
 kanban-web --host 0.0.0.0     # network-accessible (no auth — use with care)
+KANBAN_WEB_PORT=8080 kanban-web  # port via env var
 ```
+
+> **macOS note:** Port 5000 is used by AirPlay Receiver on modern macOS. If `kanban-web` fails to bind, use `--port 5001` or set `KANBAN_WEB_PORT=5001`.
 
 The board shows all status columns (backlog → todo → in_progress → review → done → closed) with drag-and-drop between them. Use the project dropdown in the header to switch between projects. Cards show priority, tags, epic membership, blocking relationships, and progress bars for epics.
 
@@ -488,7 +495,7 @@ kanban-cli --project /path/to/project context
 kanban-cli --project /path/to/project rebuild-embeddings
 ```
 
-> **Important:** Use the same absolute path you'd use with `set_current_project`. The path is hashed to identify the project — `--project .` and `--project $PWD` will create different project entries.
+> **Tip:** Paths are resolved (symlinks, `.`, `..`) before hashing, so `--project .` and `--project $PWD` refer to the same project.
 
 ## Upgrading
 
@@ -593,7 +600,7 @@ If your client supports hooks (Claude Code, Gemini CLI, VS Code Copilot, Copilot
 | Command | Description |
 |---------|-------------|
 | `kanban-mcp` | MCP server (STDIO JSON-RPC) — used by AI clients |
-| `kanban-web` | Web UI on localhost:5000 (`--port`, `--host`, `--debug` flags) |
+| `kanban-web` | Web UI on localhost:5000 (`--port`, `--host`, `--debug` flags; env: `KANBAN_WEB_PORT`, `KANBAN_WEB_HOST`) |
 | `kanban-cli` | CLI for manual queries and hook scripts (`--project`, `--format` flags) |
 | `kanban-setup` | Database setup wizard (`--auto` for non-interactive, `--with-semantic`) |
 | `kanban-hook-session-start` | Session start hook — injects active items into agent sessions |

@@ -340,22 +340,19 @@ install_kanban_mcp() {
 check_mysql_running() {
     local host="${1:-localhost}"
     local port="${2:-3306}"
-    # Try multiple methods to check MySQL/MariaDB reachability
+    # Try TCP connection first (most reliable, no auth needed)
+    # /dev/tcp is a bash builtin — works without external tools
+    (echo >/dev/tcp/"$host"/"$port") &>/dev/null && return 0
+    if command -v nc &>/dev/null; then
+        nc -z -w2 "$host" "$port" &>/dev/null && return 0
+    fi
+    # Fall back to MySQL/MariaDB tools (may fail on auth, but ping
+    # succeeds even without credentials on most configurations)
     if command -v mysqladmin &>/dev/null; then
         mysqladmin ping -h "$host" -P "$port" --connect-timeout=2 &>/dev/null && return 0
     fi
     if command -v mariadb-admin &>/dev/null; then
         mariadb-admin ping -h "$host" -P "$port" --connect-timeout=2 &>/dev/null && return 0
-    fi
-    if command -v mysql &>/dev/null; then
-        mysql -h "$host" -P "$port" -u root --connect-timeout=2 -e "SELECT 1" &>/dev/null 2>&1 && return 0
-    fi
-    # Fallback: try TCP connection
-    if command -v nc &>/dev/null; then
-        nc -z -w2 "$host" "$port" &>/dev/null && return 0
-    fi
-    if [ -e /dev/tcp/"$host"/"$port" ] 2>/dev/null; then
-        (echo >/dev/tcp/"$host"/"$port") &>/dev/null && return 0
     fi
     return 1
 }
@@ -404,7 +401,7 @@ start_docker_mysql() {
 }
 
 run_db_setup() {
-    local db_host="$1" db_name="$2" db_user="$3" db_password="$4"
+    local db_host="$1" db_name="$2" db_user="$3" db_password="$4" db_port="${5:-3306}"
 
     echo "--- Running kanban-setup ---"
 
@@ -412,13 +409,14 @@ run_db_setup() {
     KANBAN_DB_NAME="$db_name" \
     KANBAN_DB_USER="$db_user" \
     KANBAN_DB_PASSWORD="$db_password" \
+    KANBAN_DB_PORT="$db_port" \
     MYSQL_ROOT_USER="${MYSQL_ROOT_USER:-root}" \
     MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}" \
     kanban-setup --auto
 }
 
 write_env() {
-    local db_host="$1" db_user="$2" db_password="$3" db_name="$4"
+    local db_host="$1" db_user="$2" db_password="$3" db_name="$4" db_port="${5:-3306}"
 
     mkdir -p "$CONFIG_DIR"
     local env_file="$CONFIG_DIR/.env"
@@ -445,6 +443,9 @@ KANBAN_DB_USER=$db_user
 KANBAN_DB_PASSWORD=$db_password
 KANBAN_DB_NAME=$db_name
 EOF
+        if [ "$db_port" != "3306" ]; then
+            echo "KANBAN_DB_PORT=$db_port" >> "$env_file"
+        fi
         echo "Created $env_file"
     fi
 }
@@ -583,8 +584,13 @@ fi
 case "$MYSQL_METHOD" in
     local)
         DB_HOST="${KANBAN_DB_HOST:-localhost}"
-        if check_mysql_running "$DB_HOST"; then
-            echo "MySQL/MariaDB is running on $DB_HOST."
+        local_port="${KANBAN_DB_PORT:-3306}"
+        if [ "$AUTO" != true ]; then
+            read -rp "MySQL/MariaDB port [$local_port]: " DB_PORT_INPUT < /dev/tty
+            local_port=${DB_PORT_INPUT:-$local_port}
+        fi
+        if check_mysql_running "$DB_HOST" "$local_port"; then
+            echo "MySQL/MariaDB is running on $DB_HOST:$local_port."
         else
             echo "MySQL/MariaDB is not running on $DB_HOST."
             if check_docker; then
@@ -651,6 +657,32 @@ if [ "$MYSQL_METHOD" = "docker" ]; then
     DB_USER="${KANBAN_DB_USER:-kanban}"
     DB_PASSWORD="${KANBAN_DB_PASSWORD:-changeme}"
     DB_HOST="localhost"
+    local_port="${KANBAN_DB_PORT:-3306}"
+
+    # Check for port conflict before starting Docker MySQL
+    if check_mysql_running "$DB_HOST" "$local_port"; then
+        echo "Warning: Port $local_port is already in use on $DB_HOST."
+        if [ "$AUTO" = true ]; then
+            echo "Set KANBAN_DB_PORT to use a different port."
+            exit 1
+        fi
+        alt_port=$((local_port + 1))
+        read -rp "Use alternative port $alt_port instead? [Y/n] " USE_ALT < /dev/tty
+        USE_ALT=${USE_ALT:-Y}
+        if [[ "$USE_ALT" =~ ^[Yy] ]]; then
+            local_port="$alt_port"
+            echo "Using port $local_port."
+        else
+            read -rp "Enter port number: " CUSTOM_PORT < /dev/tty
+            if [ -z "$CUSTOM_PORT" ]; then
+                echo "No port specified. Aborting."
+                exit 1
+            fi
+            local_port="$CUSTOM_PORT"
+            echo "Using port $local_port."
+        fi
+    fi
+    export KANBAN_DB_PORT="$local_port"
 
     download_docker_files
     echo
@@ -664,7 +696,7 @@ if [ "$MYSQL_METHOD" = "docker" ]; then
     echo
 
     # Write .env and print instructions
-    write_env "$DB_HOST" "$DB_USER" "$DB_PASSWORD" "$DB_NAME"
+    write_env "$DB_HOST" "$DB_USER" "$DB_PASSWORD" "$DB_NAME" "$local_port"
     print_next_steps "$DB_HOST" "$DB_USER" "$DB_PASSWORD" "$DB_NAME" true
 
     echo "Docker compose files: $CONFIG_DIR/docker/"
@@ -729,7 +761,7 @@ else
         fi
     fi
 
-    run_db_setup "$DB_HOST" "$DB_NAME" "$DB_USER" "$DB_PASSWORD"
+    run_db_setup "$DB_HOST" "$DB_NAME" "$DB_USER" "$DB_PASSWORD" "${local_port:-3306}"
 
     # Install semantic dependencies if requested
     if [ "$WITH_SEMANTIC" = true ]; then

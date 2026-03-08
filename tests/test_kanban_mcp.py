@@ -4593,5 +4593,103 @@ class TestCLIInputValidation(unittest.TestCase):
         self.assertIn("Error", result)
 
 
+class TestPathResolution(unittest.TestCase):
+    """Test that project paths are resolved before hashing."""
+
+    def test_hash_resolves_relative_path(self):
+        """Relative path components should be resolved before hashing."""
+        from kanban_mcp.core import KanbanDB
+        # /tmp/./foo/../ should resolve to /tmp
+        h1 = KanbanDB.hash_project_path("/tmp/./foo/../")
+        h2 = KanbanDB.hash_project_path("/tmp")
+        self.assertEqual(h1, h2)
+
+    def test_hash_resolves_symlinks(self):
+        """Symlinked paths should hash to the same value."""
+        import tempfile
+        from kanban_mcp.core import KanbanDB
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_dir = os.path.join(tmpdir, "real")
+            os.makedirs(real_dir)
+            link_dir = os.path.join(tmpdir, "link")
+            os.symlink(real_dir, link_dir)
+            h_real = KanbanDB.hash_project_path(real_dir)
+            h_link = KanbanDB.hash_project_path(link_dir)
+            self.assertEqual(h_real, h_link)
+
+    def test_ensure_project_stores_resolved_path(self):
+        """ensure_project should store the resolved path in DB."""
+        import tempfile
+        from kanban_mcp.core import KanbanDB
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_dir = os.path.join(tmpdir, "real")
+            os.makedirs(real_dir)
+            link_dir = os.path.join(tmpdir, "link")
+            os.symlink(real_dir, link_dir)
+
+            db = MagicMock(spec=KanbanDB)
+            db.hash_project_path = KanbanDB.hash_project_path
+            db._db_cursor = MagicMock()
+
+            # Call the real ensure_project with a symlink path
+            from kanban_mcp.core import KanbanDB as RealDB
+            # Use a real instance with mocked pool
+            with patch(
+                'kanban_mcp.core.MySQLConnectionPool',
+            ):
+                with patch.dict(os.environ, {
+                    'KANBAN_DB_USER': 'test',
+                    'KANBAN_DB_PASSWORD': 'test',
+                    'KANBAN_DB_NAME': 'test',
+                }):
+                    instance = RealDB()
+            # Mock the cursor context manager
+            mock_cursor = MagicMock()
+            instance._db_cursor = MagicMock(
+                return_value=MagicMock(
+                    __enter__=MagicMock(
+                        return_value=mock_cursor,
+                    ),
+                    __exit__=MagicMock(return_value=False),
+                ),
+            )
+            instance.ensure_project(link_dir)
+
+            # The INSERT should use the resolved (real) path
+            call_args = mock_cursor.execute.call_args
+            sql_params = call_args[0][1]
+            # params are (project_id, directory_path, name)
+            stored_path = sql_params[1]
+            self.assertEqual(
+                stored_path,
+                str(os.path.realpath(real_dir)),
+            )
+
+    def test_ensure_project_dot_and_cwd_same(self):
+        """ensure_project('.') should produce same ID as cwd."""
+        from kanban_mcp.core import KanbanDB
+        with patch(
+            'kanban_mcp.core.MySQLConnectionPool',
+        ):
+            with patch.dict(os.environ, {
+                'KANBAN_DB_USER': 'test',
+                'KANBAN_DB_PASSWORD': 'test',
+                'KANBAN_DB_NAME': 'test',
+            }):
+                instance = KanbanDB()
+        mock_cursor = MagicMock()
+        instance._db_cursor = MagicMock(
+            return_value=MagicMock(
+                __enter__=MagicMock(
+                    return_value=mock_cursor,
+                ),
+                __exit__=MagicMock(return_value=False),
+            ),
+        )
+        id_dot = instance.ensure_project(".")
+        id_cwd = instance.ensure_project(os.getcwd())
+        self.assertEqual(id_dot, id_cwd)
+
+
 if __name__ == "__main__":
     unittest.main()

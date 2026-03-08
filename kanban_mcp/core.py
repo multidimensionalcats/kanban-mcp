@@ -79,7 +79,7 @@ class KanbanDB:
 
     def __init__(self, host: str = None, user: str = None,
                  password: str = None, database: str = None,
-                 pool_size: int = None):
+                 pool_size: int = None, port: int = None):
         resolved_user = user or os.environ.get("KANBAN_DB_USER", "")
         resolved_password = password or os.environ.get(
             "KANBAN_DB_PASSWORD", "")
@@ -100,8 +100,12 @@ class KanbanDB:
                 "pass to constructor."
             )
 
+        resolved_port = port or int(
+            os.environ.get("KANBAN_DB_PORT", "3306"))
+
         self.config = {
             "host": host or os.environ.get("KANBAN_DB_HOST", "localhost"),
+            "port": resolved_port,
             "user": resolved_user,
             "password": resolved_password,
             "database": resolved_database,
@@ -166,21 +170,28 @@ class KanbanDB:
 
     @staticmethod
     def hash_project_path(directory_path: str) -> str:
-        """Generate a 16-char hash ID from directory path."""
-        return hashlib.sha256(directory_path.encode()).hexdigest()[:16]
+        """Generate a 16-char hash ID from directory path.
+
+        Resolves the path (symlinks, relative components) before
+        hashing so that '.', '$PWD', and symlinked paths all
+        produce the same project ID.
+        """
+        resolved = str(Path(directory_path).resolve())
+        return hashlib.sha256(resolved.encode()).hexdigest()[:16]
 
     def ensure_project(self, directory_path: str, name: str = None) -> str:
         """Ensure project exists, create if not. Returns project_id."""
-        project_id = self.hash_project_path(directory_path)
+        resolved = str(Path(directory_path).resolve())
+        project_id = self.hash_project_path(resolved)
         if name is None:
-            name = Path(directory_path).name
+            name = Path(resolved).name
 
         with self._db_cursor(commit=True) as cursor:
             cursor.execute(
                 "INSERT IGNORE INTO projects"
                 " (id, directory_path, name)"
                 " VALUES (%s, %s, %s)",
-                (project_id, directory_path, name))
+                (project_id, resolved, name))
             return project_id
 
     def get_project_by_path(self, directory_path: str) -> Optional[Dict]:
@@ -2628,14 +2639,15 @@ class KanbanMCPServer:
 
             Called at session start with $PWD.
             """
-            self.current_project_id = self.db.ensure_project(project_dir)
-            self.current_project_path = project_dir
+            resolved = str(Path(project_dir).resolve())
+            self.current_project_id = self.db.ensure_project(resolved)
+            self.current_project_path = resolved
             project = self.db.get_project_by_id(self.current_project_id)
             return {
                 "success": True,
                 "project_id": self.current_project_id,
                 "project_name": project['name'] if project else None,
-                "directory_path": project_dir
+                "directory_path": resolved
             }
 
         @self.tool("get_current_project")

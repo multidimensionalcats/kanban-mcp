@@ -56,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--db-host", default=None, help="MySQL/MariaDB host",
     )
     parser.add_argument(
+        "--db-port", default=None, help="MySQL/MariaDB port",
+    )
+    parser.add_argument(
         "--mysql-root-user", default=None,
         help="MySQL/MariaDB admin user for setup",
     )
@@ -118,6 +121,7 @@ def write_env_file(
     db_user: str,
     db_password: str,
     db_name: str,
+    db_port: str = "3306",
 ) -> None:
     """Write a .env file with kanban-mcp database configuration."""
     content = (
@@ -127,6 +131,8 @@ def write_env_file(
         f"KANBAN_DB_PASSWORD={db_password}\n"
         f"KANBAN_DB_NAME={db_name}\n"
     )
+    if db_port != "3306":
+        content += f"KANBAN_DB_PORT={db_port}\n"
     Path(path).write_text(content)
 
 
@@ -162,6 +168,9 @@ def resolve_config(args: argparse.Namespace) -> dict:
         "db_host": _resolve(
             args.db_host, "KANBAN_DB_HOST", "localhost",
         ),
+        "db_port": _resolve(
+            args.db_port, "KANBAN_DB_PORT", "3306",
+        ),
         "mysql_root_user": _resolve(
             args.mysql_root_user, "MYSQL_ROOT_USER", "root",
         ),
@@ -175,18 +184,22 @@ def resolve_config(args: argparse.Namespace) -> dict:
 
 def mcp_config_json(
     db_host: str, db_user: str, db_password: str, db_name: str,
+    db_port: str = "3306",
 ) -> str:
     """Return MCP config JSON string with explicit credentials."""
+    env = {
+        "KANBAN_DB_HOST": db_host,
+        "KANBAN_DB_USER": db_user,
+        "KANBAN_DB_PASSWORD": db_password,
+        "KANBAN_DB_NAME": db_name,
+    }
+    if db_port != "3306":
+        env["KANBAN_DB_PORT"] = db_port
     config = {
         "mcpServers": {
             "kanban": {
                 "command": "kanban-mcp",
-                "env": {
-                    "KANBAN_DB_HOST": db_host,
-                    "KANBAN_DB_USER": db_user,
-                    "KANBAN_DB_PASSWORD": db_password,
-                    "KANBAN_DB_NAME": db_name,
-                },
+                "env": env,
             }
         }
     }
@@ -234,6 +247,9 @@ def _run_interactive(args: argparse.Namespace) -> dict:
     db_host = _prompt(
         "Database host", defaults["db_host"] or "localhost",
     )
+    db_port = _prompt(
+        "Database port", defaults["db_port"] or "3306",
+    )
     mysql_root_user = _prompt(
         "MySQL/MariaDB root user for setup",
         defaults["mysql_root_user"] or "root",
@@ -247,6 +263,7 @@ def _run_interactive(args: argparse.Namespace) -> dict:
         "db_user": db_user,
         "db_password": db_password,
         "db_host": db_host,
+        "db_port": db_port,
         "mysql_root_user": mysql_root_user,
         "mysql_root_password": mysql_root_password or None,
     }
@@ -314,9 +331,12 @@ def _create_database(config: dict) -> None:
     is_local = config["db_host"] in ("localhost", "127.0.0.1")
     has_password = bool(config["mysql_root_password"])
 
+    db_port = int(config.get("db_port", "3306"))
+
     connect_args = {
         "user": config["mysql_root_user"],
         "host": config["db_host"],
+        "port": db_port,
     }
     if has_password:
         connect_args["password"] = config["mysql_root_password"]
@@ -327,8 +347,9 @@ def _create_database(config: dict) -> None:
         sock = _find_mysql_socket()
         if sock:
             connect_args["unix_socket"] = sock
-            # Remove host — socket and host are mutually exclusive
+            # Remove host/port — socket and host are mutually exclusive
             connect_args.pop("host", None)
+            connect_args.pop("port", None)
 
     print("Connecting to MySQL/MariaDB as root...")
     try:
@@ -347,6 +368,7 @@ def _create_database(config: dict) -> None:
             tcp_args = {
                 "user": config["mysql_root_user"],
                 "host": config["db_host"],
+                "port": db_port,
                 "password": "",  # nosec B105
             }
             try:
@@ -526,10 +548,13 @@ def _run_migrations(config: dict) -> None:
         f" in: {migration_files[0].parent}"
     )
 
+    db_port = int(config.get("db_port", "3306"))
+
     connect_args = {
         "user": config["db_user"],
         "password": config["db_password"],
         "host": config["db_host"],
+        "port": db_port,
         "database": config["db_name"],
     }
     if config["db_host"] in ("localhost", "127.0.0.1"):
@@ -537,6 +562,7 @@ def _run_migrations(config: dict) -> None:
         if sock:
             connect_args["unix_socket"] = sock
             connect_args.pop("host", None)
+            connect_args.pop("port", None)
 
     try:
         conn = mysql.connector.connect(**connect_args)
@@ -731,6 +757,7 @@ def _handle_env_file(config: dict, auto: bool) -> None:
             db_user=config["db_user"],
             db_password=config["db_password"],
             db_name=config["db_name"],
+            db_port=config.get("db_port", "3306"),
         )
         print(f"Created {env_path}")
 
@@ -789,6 +816,8 @@ def main() -> None:
     print(f"  Database: {config['db_name']}")
     print(f"  User:     {config['db_user']}")
     print(f"  Host:     {config['db_host']}")
+    if config.get("db_port", "3306") != "3306":
+        print(f"  Port:     {config['db_port']}")
     print()
 
     if args.migrate_only:
@@ -852,6 +881,7 @@ def main() -> None:
         config["db_user"],
         config["db_password"],
         config["db_name"],
+        db_port=config.get("db_port", "3306"),
     ))
     print()
     print("2. Start the web UI (optional):")

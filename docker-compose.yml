@@ -2,7 +2,7 @@ services:
   db:
     image: mysql:8.0
     ports:
-      - "3306:3306"
+      - "${KANBAN_DB_PORT:-3306}:3306"
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-kanban_root}
       MYSQL_DATABASE: ${KANBAN_DB_NAME:-kanban}
