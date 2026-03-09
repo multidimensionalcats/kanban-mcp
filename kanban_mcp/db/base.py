@@ -48,3 +48,22 @@ class DatabaseBackend(ABC):
     @abstractmethod
     def backend_type(self) -> str:
         """Backend identifier: 'mysql' or 'sqlite'."""
+
+    @property
+    @abstractmethod
+    def now_func(self) -> str:
+        """SQL expression for current timestamp.
+
+        Returns 'NOW()' for MySQL, "datetime('now')" for SQLite.
+        """
+
+    @abstractmethod
+    def is_duplicate_error(self, exc: Exception) -> bool:
+        """Check if an exception is a duplicate key/unique constraint error.
+
+        Args:
+            exc: The exception to check.
+
+        Returns:
+            True if the error is a duplicate/unique constraint violation.
+        """

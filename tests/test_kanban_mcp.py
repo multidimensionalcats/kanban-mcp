@@ -4138,12 +4138,14 @@ class TestCredentialHardening(unittest.TestCase):
     """Tests for #8219 — no hardcoded defaults for DB credentials."""
 
     def _clear_env(self):
-        """Remove all KANBAN_DB_ env vars."""
+        """Remove all KANBAN_DB_ env vars and force MySQL backend."""
         for key in (
             'KANBAN_DB_USER', 'KANBAN_DB_PASSWORD',
             'KANBAN_DB_NAME', 'KANBAN_DB_HOST',
         ):
             os.environ.pop(key, None)
+        # Force MySQL so auto-detect doesn't fall back to SQLite
+        os.environ['KANBAN_BACKEND'] = 'mysql'
 
     def setUp(self):
         # Save original env
@@ -4152,7 +4154,8 @@ class TestCredentialHardening(unittest.TestCase):
                 'KANBAN_DB_USER',
                 'KANBAN_DB_PASSWORD',
                 'KANBAN_DB_NAME',
-                'KANBAN_DB_HOST')}
+                'KANBAN_DB_HOST',
+                'KANBAN_BACKEND')}
 
     def tearDown(self):
         # Restore original env

@@ -229,12 +229,66 @@ class TestBackendFactory(unittest.TestCase):
             self.assertIn('postgres', str(ctx.exception))
 
     def test_missing_mysql_creds_raises(self):
-        """MySQLBackend without credentials raises ValueError."""
+        """Explicit MySQL backend without credentials raises ValueError."""
+        from kanban_mcp.db import create_backend
+        env = os.environ.copy()
+        for key in ('KANBAN_DB_USER', 'KANBAN_DB_PASSWORD',
+                    'KANBAN_DB_NAME', 'KANBAN_BACKEND'):
+            env.pop(key, None)
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(ValueError):
+                create_backend(backend_type='mysql')
+
+    def test_auto_detect_sqlite_when_no_mysql_creds(self):
+        """No KANBAN_DB_* env vars -> SQLiteBackend."""
+        from kanban_mcp.db import create_backend
+        from kanban_mcp.db.sqlite_backend import SQLiteBackend
+        env = os.environ.copy()
+        for key in ('KANBAN_DB_USER', 'KANBAN_DB_PASSWORD',
+                    'KANBAN_DB_NAME', 'KANBAN_BACKEND'):
+            env.pop(key, None)
+        with patch.dict(os.environ, env, clear=True):
+            backend = create_backend(db_path=':memory:')
+        self.assertIsInstance(backend, SQLiteBackend)
+
+    def test_auto_detect_mysql_when_creds_present(self):
+        """All three KANBAN_DB_* set -> MySQLBackend."""
+        from kanban_mcp.db import create_backend
+        from kanban_mcp.db.mysql_backend import MySQLBackend
+        with patch('kanban_mcp.db.mysql_backend.MySQLConnectionPool'):
+            with patch.dict(os.environ, {
+                'KANBAN_DB_USER': 'test',
+                'KANBAN_DB_PASSWORD': 'test',
+                'KANBAN_DB_NAME': 'test',
+            }):
+                # Remove KANBAN_BACKEND to test auto-detection
+                env = os.environ.copy()
+                env.pop('KANBAN_BACKEND', None)
+                with patch.dict(os.environ, env, clear=True):
+                    os.environ['KANBAN_DB_USER'] = 'test'
+                    os.environ['KANBAN_DB_PASSWORD'] = 'test'
+                    os.environ['KANBAN_DB_NAME'] = 'test'
+                    backend = create_backend()
+        self.assertIsInstance(backend, MySQLBackend)
+
+    def test_explicit_sqlite_backend(self):
+        """KANBAN_BACKEND=sqlite -> SQLiteBackend."""
+        from kanban_mcp.db import create_backend
+        from kanban_mcp.db.sqlite_backend import SQLiteBackend
+        with patch.dict(os.environ, {
+            'KANBAN_BACKEND': 'sqlite',
+        }):
+            backend = create_backend(db_path=':memory:')
+        self.assertIsInstance(backend, SQLiteBackend)
+
+    def test_explicit_mysql_overrides_missing_creds(self):
+        """KANBAN_BACKEND=mysql without creds -> ValueError."""
         from kanban_mcp.db import create_backend
         env = os.environ.copy()
         for key in ('KANBAN_DB_USER', 'KANBAN_DB_PASSWORD',
                     'KANBAN_DB_NAME'):
             env.pop(key, None)
+        env['KANBAN_BACKEND'] = 'mysql'
         with patch.dict(os.environ, env, clear=True):
             with self.assertRaises(ValueError):
                 create_backend()
@@ -322,6 +376,23 @@ class TestMySQLBackend(unittest.TestCase):
         # port should be in the kwargs passed to pool
         self.assertEqual(call_kwargs[1].get('port')
                          or call_kwargs.kwargs.get('port'), 3307)
+
+    def test_now_func_returns_valid_sql(self):
+        """now_func must return a SQL timestamp expression."""
+        backend = self._make_backend()
+        self.assertEqual(backend.now_func, 'NOW()')
+
+    def test_is_duplicate_error_true(self):
+        """is_duplicate_error returns True for MySQL duplicate entry."""
+        backend = self._make_backend()
+        exc = Exception("1062 (23000): Duplicate entry 'foo' for key")
+        self.assertTrue(backend.is_duplicate_error(exc))
+
+    def test_is_duplicate_error_false(self):
+        """is_duplicate_error returns False for unrelated errors."""
+        backend = self._make_backend()
+        exc = Exception("Table not found")
+        self.assertFalse(backend.is_duplicate_error(exc))
 
     def test_is_subclass_of_database_backend(self):
         """MySQLBackend must be a subclass of DatabaseBackend ABC."""

@@ -155,7 +155,7 @@ class MySQLBackend(DatabaseBackend):
     def run_migrations(self, migrations_dir: str) -> None:
         """Apply pending migrations — delegates to setup module."""
         from kanban_mcp.setup import auto_migrate
-        auto_migrate(self.config)
+        auto_migrate(self)
 
     @property
     def placeholder(self) -> str:
@@ -168,3 +168,10 @@ class MySQLBackend(DatabaseBackend):
     @property
     def backend_type(self) -> str:
         return 'mysql'
+
+    @property
+    def now_func(self) -> str:
+        return 'NOW()'
+
+    def is_duplicate_error(self, exc: Exception) -> bool:
+        return 'Duplicate entry' in str(exc)

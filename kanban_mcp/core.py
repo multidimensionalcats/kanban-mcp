@@ -648,7 +648,7 @@ class KanbanDB:
                     self._sql(
                         "UPDATE items"
                         " SET status_id = %s,"
-                        " closed_at = NOW()"
+                        f" closed_at = {self._backend.now_func}"  # nosec B608
                         " WHERE id = %s"),
                     (status_id, item_id))
             else:
@@ -701,7 +701,7 @@ class KanbanDB:
                 self._sql(
                     "UPDATE items"
                     " SET status_id = %s,"
-                    " closed_at = NOW()"
+                    f" closed_at = {self._backend.now_func}"  # nosec B608
                     " WHERE id = %s"),
                 (final_status['id'], item_id)
             )
@@ -930,7 +930,7 @@ class KanbanDB:
                     "type": relationship_type
                 }
         except Exception as e:
-            if "Duplicate entry" in str(e):
+            if self._backend.is_duplicate_error(e):
                 return {
                     "success": False,
                     "error": "Relationship already exists"}
@@ -1304,7 +1304,7 @@ class KanbanDB:
                     (project_id, name, color))
                 return cursor.lastrowid
         except Exception as e:
-            if "Duplicate entry" in str(e):
+            if self._backend.is_duplicate_error(e):
                 # Race condition: tag created by concurrent request
                 with self._db_cursor(dictionary=True) as cursor:
                     cursor.execute(
@@ -1382,7 +1382,7 @@ class KanbanDB:
                 cursor.execute(self._sql(query), params)
             return {"success": True, "tag": self.get_tag(tag_id)}
         except Exception as e:
-            if "Duplicate entry" in str(e):
+            if self._backend.is_duplicate_error(e):
                 return {
                     "success": False,
                     "error": "Tag name already exists in this project"}
@@ -1425,7 +1425,7 @@ class KanbanDB:
                 "tag_name": normalized_name
             }
         except Exception as e:
-            if "Duplicate entry" in str(e):
+            if self._backend.is_duplicate_error(e):
                 return {
                     "success": False,
                     "error": "Tag already assigned to item"}
@@ -1907,13 +1907,13 @@ class KanbanDB:
         # Upsert into database
         with self._db_cursor(commit=True) as cursor:
             if existing:
-                cursor.execute(self._sql("""
+                cursor.execute(self._sql(f"""
                     UPDATE embeddings
                     SET `vector` = %s,
                         content_hash = %s,
-                        created_at = NOW()
+                        created_at = {self._backend.now_func}
                     WHERE id = %s
-                """), (vector, content_hash, existing['id']))
+                """), (vector, content_hash, existing['id']))  # nosec B608
                 return {
                     'success': True,
                     'status': 'updated',
@@ -2453,7 +2453,7 @@ class KanbanMCPServer:
 
         # Auto-apply pending migrations
         from kanban_mcp.setup import auto_migrate
-        auto_migrate(self.db.config)
+        auto_migrate(self.db._backend)
 
         # Current project state
         self.current_project_id = None
