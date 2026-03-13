@@ -1,0 +1,60 @@
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: kanban_test
+      MYSQL_USER: kanban
+      MYSQL_PASSWORD: testpass
+    healthcheck:
+      test: mysqladmin ping -h localhost
+      interval: 5s
+      retries: 10
+
+  test-sqlite:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.test
+    environment:
+      TEST_SCENARIO: sqlite
+    depends_on: []
+
+  test-sqlite-semantic:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.test
+    environment:
+      TEST_SCENARIO: sqlite-semantic
+    depends_on: []
+
+  test-mysql:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.test
+    environment:
+      TEST_SCENARIO: mysql
+      KANBAN_DB_HOST: mysql
+      KANBAN_DB_USER: kanban
+      KANBAN_DB_PASSWORD: testpass
+      KANBAN_DB_NAME: kanban_test
+      MYSQL_ROOT_USER: root
+      MYSQL_ROOT_PASSWORD: rootpass
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  test-mysql-semantic:
+    build:
+      context: ..
+      dockerfile: tests/Dockerfile.test
+    environment:
+      TEST_SCENARIO: mysql-semantic
+      KANBAN_DB_HOST: mysql
+      KANBAN_DB_USER: kanban
+      KANBAN_DB_PASSWORD: testpass
+      KANBAN_DB_NAME: kanban_test
+      MYSQL_ROOT_USER: root
+      MYSQL_ROOT_PASSWORD: rootpass
+    depends_on:
+      mysql:
+        condition: service_healthy

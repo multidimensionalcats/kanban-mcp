@@ -14,11 +14,12 @@ def cleanup_test_project(db, project_path):
     """Clean up all test data for a project including the project itself."""
     project_id = db.hash_project_path(project_path)
     pid = project_id
-    sub = "(SELECT id FROM items WHERE project_id = %s)"
+    ph = db._backend.placeholder
+    sub = f"(SELECT id FROM items WHERE project_id = {ph})"
     with db._db_cursor(commit=True) as cursor:
         cursor.execute(
             "DELETE FROM update_items WHERE update_id IN "
-            "(SELECT id FROM updates WHERE project_id = %s)",
+            f"(SELECT id FROM updates WHERE project_id = {ph})",
             (pid,))
         cursor.execute(
             "DELETE FROM embeddings WHERE source_type = 'item'"
@@ -32,9 +33,9 @@ def cleanup_test_project(db, project_path):
             "DELETE FROM embeddings WHERE source_type = "
             "'update' AND source_id IN "
             "(SELECT id FROM updates WHERE "
-            "project_id = %s)", (pid,))
+            f"project_id = {ph})", (pid,))
         cursor.execute(
-            "DELETE FROM updates WHERE project_id = %s",
+            f"DELETE FROM updates WHERE project_id = {ph}",
             (pid,))
         cursor.execute(
             "DELETE FROM item_tags WHERE item_id IN "
@@ -54,12 +55,12 @@ def cleanup_test_project(db, project_path):
             + " OR target_item_id IN " + sub,
             (pid, pid))
         cursor.execute(
-            "DELETE FROM items WHERE project_id = %s",
+            f"DELETE FROM items WHERE project_id = {ph}",
             (pid,))
         cursor.execute(
-            "DELETE FROM tags WHERE project_id = %s",
+            f"DELETE FROM tags WHERE project_id = {ph}",
             (pid,))
-        cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+        cursor.execute(f"DELETE FROM projects WHERE id = {ph}", (project_id,))
 
 
 class TestKanbanDB(unittest.TestCase):
@@ -69,7 +70,9 @@ class TestKanbanDB(unittest.TestCase):
     def setUpClass(cls):
         """Set up test database connection."""
         from kanban_mcp.core import KanbanDB
+        from kanban_mcp.setup import auto_migrate
         cls.db = KanbanDB()
+        auto_migrate(cls.db._backend)
         # Use a test project path
         cls.test_project_path = "/tmp/test-kanban-project"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
@@ -632,7 +635,9 @@ class TestConnectionPooling(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from kanban_mcp.core import KanbanDB
+        from kanban_mcp.setup import auto_migrate
         cls.db = KanbanDB()
+        auto_migrate(cls.db._backend)
         cls.test_project_path = "/tmp/test-pool"
 
     def setUp(self):
@@ -645,8 +650,11 @@ class TestConnectionPooling(unittest.TestCase):
         """KanbanDB should have a database backend."""
         self.assertTrue(hasattr(self.db, '_backend'))
         self.assertIsNotNone(self.db._backend)
-        self.assertEqual(self.db._backend.backend_type, 'mysql')
+        self.assertIn(self.db._backend.backend_type, ('mysql', 'sqlite'))
 
+    @unittest.skipIf(
+        os.environ.get('KANBAN_BACKEND') == 'sqlite',
+        "MySQL-specific pool test")
     def test_get_connection_returns_pooled_connection(self):
         """Backend pool should return working connections."""
         conn = self.db._backend._get_connection()
@@ -674,6 +682,9 @@ class TestConnectionPooling(unittest.TestCase):
                 self.test_project_path))
         self.assertEqual(len(items), 10)
 
+    @unittest.skipIf(
+        os.environ.get('KANBAN_BACKEND') == 'sqlite',
+        "MySQL-specific pool test")
     def test_pool_size_configurable(self):
         """Pool size should be configurable at init."""
         from kanban_mcp.core import KanbanDB
@@ -704,46 +715,18 @@ class TestRelationships(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from kanban_mcp.core import KanbanDB
+        from kanban_mcp.setup import auto_migrate
         cls.db = KanbanDB()
+        auto_migrate(cls.db._backend)
         cls.project_id = cls.db.hash_project_path('/tmp/test_relationships')
         # Create project
-        with cls.db._db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "INSERT INTO projects "
-                "(id, name, directory_path) "
-                "VALUES (%s, %s, %s) "
-                "ON DUPLICATE KEY UPDATE "
-                "name = VALUES(name)",
-                (cls.project_id,
-                 'test_relationships',
-                 '/tmp/test_relationships'))
+        cls.db.ensure_project('/tmp/test_relationships',
+                              'test_relationships')
 
     @classmethod
     def tearDownClass(cls):
-        # Clean up relationships
-        sub = (
-            "(SELECT id FROM items "
-            "WHERE project_id = %s)")
-        with cls.db._db_cursor(commit=True) as cursor:
-            cursor.execute(
-                "DELETE FROM item_relationships "
-                "WHERE source_item_id IN " + sub,
-                (cls.project_id,))
-            cursor.execute(
-                "DELETE FROM update_items "
-                "WHERE item_id IN " + sub,
-                (cls.project_id,))
-            cursor.execute(
-                "DELETE FROM updates "
-                "WHERE project_id = %s",
-                (cls.project_id,))
-            cursor.execute(
-                "DELETE FROM items "
-                "WHERE project_id = %s",
-                (cls.project_id,))
-            cursor.execute(
-                "DELETE FROM projects WHERE id = %s",
-                (cls.project_id,))
+        cleanup_test_project(cls.db,
+                             '/tmp/test_relationships')
 
     def setUp(self):
         # Create fresh test items for each test
@@ -759,12 +742,14 @@ class TestRelationships(unittest.TestCase):
 
     def tearDown(self):
         # Clean up items and relationships
+        ph = self.db._backend.placeholder
         ids = (self.blocker_id, self.blocked_id, self.other_id)
+        placeholders = f"({ph}, {ph}, {ph})"
         with self.db._db_cursor(commit=True) as cursor:
             cursor.execute(
                 "DELETE FROM item_relationships "
-                "WHERE source_item_id IN (%s, %s, %s) "
-                "OR target_item_id IN (%s, %s, %s)",
+                "WHERE source_item_id IN " + placeholders
+                + " OR target_item_id IN " + placeholders,
                 ids + ids)
         self.db.delete_item(self.blocker_id)
         self.db.delete_item(self.blocked_id)
@@ -3174,9 +3159,10 @@ class TestFileLinks(unittest.TestCase):
         self.db.delete_item(self.item_id)
 
         # File links should be gone (verify via query)
+        ph = self.db._backend.placeholder
         with self.db._db_cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) FROM item_files WHERE item_id = %s",
+                f"SELECT COUNT(*) FROM item_files WHERE item_id = {ph}",
                 (self.item_id,)
             )
             count = cursor.fetchone()[0]
@@ -3669,8 +3655,9 @@ class TestDecisions(unittest.TestCase):
         # Verify item and decisions are gone (check via direct query)
         with self.db._db_cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) FROM "
-                "item_decisions WHERE item_id = %s",
+                self.db._sql(
+                    "SELECT COUNT(*) FROM "
+                    "item_decisions WHERE item_id = %s"),
                 (self.item_id,))
             count = cursor.fetchone()[0]
             self.assertEqual(count, 0)
@@ -3897,8 +3884,9 @@ class TestEmbeddings(unittest.TestCase):
 
         with self.db._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "UPDATE items SET title = %s "
-                "WHERE id = %s",
+                self.db._sql(
+                    "UPDATE items SET title = %s "
+                    "WHERE id = %s"),
                 ("Completely Different Title "
                  "About Something Else",
                  self.item_id))
@@ -4251,12 +4239,16 @@ class TestCascadeDelete(unittest.TestCase):
         self.db.create_item(project_id, 'todo', 'Item 3')
 
         with self.db._db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+            cursor.execute(
+                self.db._sql(
+                    "DELETE FROM projects WHERE id = %s"),
+                (project_id,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT COUNT(*) as cnt FROM items "
-                "WHERE project_id = %s",
+                self.db._sql(
+                    "SELECT COUNT(*) as cnt FROM items "
+                    "WHERE project_id = %s"),
                 (project_id,))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 
@@ -4266,13 +4258,17 @@ class TestCascadeDelete(unittest.TestCase):
         self.db.add_update(project_id, 'Test update', [item_id])
 
         with self.db._db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+            cursor.execute(
+                self.db._sql(
+                    "DELETE FROM projects WHERE id = %s"),
+                (project_id,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT COUNT(*) as cnt "
-                "FROM updates "
-                "WHERE project_id = %s",
+                self.db._sql(
+                    "SELECT COUNT(*) as cnt "
+                    "FROM updates "
+                    "WHERE project_id = %s"),
                 (project_id,))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 
@@ -4282,13 +4278,17 @@ class TestCascadeDelete(unittest.TestCase):
         update_id = self.db.add_update(project_id, 'Test update', [item_id])
 
         with self.db._db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+            cursor.execute(
+                self.db._sql(
+                    "DELETE FROM projects WHERE id = %s"),
+                (project_id,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT COUNT(*) as cnt "
-                "FROM update_items "
-                "WHERE update_id = %s",
+                self.db._sql(
+                    "SELECT COUNT(*) as cnt "
+                    "FROM update_items "
+                    "WHERE update_id = %s"),
                 (update_id,))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 
@@ -4299,12 +4299,16 @@ class TestCascadeDelete(unittest.TestCase):
         self.db.create_item(pid2, 'issue', 'Item in project 2')
 
         with self.db._db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM projects WHERE id = %s", (pid1,))
+            cursor.execute(
+                self.db._sql(
+                    "DELETE FROM projects WHERE id = %s"),
+                (pid1,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT COUNT(*) as cnt FROM items "
-                "WHERE project_id = %s", (pid2,))
+                self.db._sql(
+                    "SELECT COUNT(*) as cnt FROM items "
+                    "WHERE project_id = %s"), (pid2,))
             self.assertEqual(cursor.fetchone()['cnt'], 1)
 
 
@@ -4314,13 +4318,27 @@ class TestIndexExistence(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from kanban_mcp.core import KanbanDB
+        from kanban_mcp.setup import auto_migrate
         cls.db = KanbanDB()
+        auto_migrate(cls.db._backend)
 
     def _get_index_columns(self, table):
         """Get set of indexed column names for a table."""
         with self.db._db_cursor(dictionary=True) as cursor:
-            cursor.execute(f"SHOW INDEX FROM {table}")
-            return {row['Column_name'] for row in cursor.fetchall()}
+            if self.db._backend.backend_type == 'sqlite':
+                cursor.execute(
+                    f"PRAGMA index_list({table})")
+                cols = set()
+                for idx in cursor.fetchall():
+                    cursor.execute(
+                        f"PRAGMA index_info({idx['name']})")
+                    for info in cursor.fetchall():
+                        cols.add(info['name'])
+                return cols
+            else:
+                cursor.execute(f"SHOW INDEX FROM {table}")
+                return {row['Column_name']
+                        for row in cursor.fetchall()}
 
     def test_index_on_relationship_target_item_id(self):
         cols = self._get_index_columns('item_relationships')
@@ -4421,10 +4439,11 @@ class TestCleanupTestProject(unittest.TestCase):
 
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT COUNT(*) as cnt "
-                "FROM item_relationships "
-                "WHERE source_item_id = %s "
-                "OR target_item_id = %s",
+                self.db._sql(
+                    "SELECT COUNT(*) as cnt "
+                    "FROM item_relationships "
+                    "WHERE source_item_id = %s "
+                    "OR target_item_id = %s"),
                 (item1, item2))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 

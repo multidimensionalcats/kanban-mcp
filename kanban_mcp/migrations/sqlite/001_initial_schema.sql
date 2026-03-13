@@ -7,7 +7,7 @@
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
     filename TEXT PRIMARY KEY,
-    applied_at TEXT DEFAULT (datetime('now'))
+    applied_at TIMESTAMP DEFAULT (datetime('now'))
 );
 
 -- ============================================================
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS projects (
     id TEXT NOT NULL PRIMARY KEY,
     directory_path TEXT NOT NULL UNIQUE,
     name TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TIMESTAMP DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS items (
@@ -52,12 +52,12 @@ CREATE TABLE IF NOT EXISTS items (
     title TEXT NOT NULL,
     description TEXT,
     priority INTEGER DEFAULT 3,
-    created_at TEXT DEFAULT (datetime('now')),
-    updated_at TEXT DEFAULT (datetime('now')),
-    closed_at TEXT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT (datetime('now')),
+    updated_at TIMESTAMP DEFAULT (datetime('now')),
+    closed_at TIMESTAMP DEFAULT NULL,
     complexity INTEGER DEFAULT NULL,
     parent_id INTEGER DEFAULT NULL,
-    FOREIGN KEY (project_id) REFERENCES projects(id),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (type_id) REFERENCES item_types(id),
     FOREIGN KEY (status_id) REFERENCES statuses(id),
     FOREIGN KEY (parent_id) REFERENCES items(id) ON DELETE CASCADE
@@ -71,8 +71,8 @@ CREATE TABLE IF NOT EXISTS updates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id TEXT NOT NULL,
     content TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (project_id) REFERENCES projects(id)
+    created_at TIMESTAMP DEFAULT (datetime('now')),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_project_created ON updates(project_id, created_at);
@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS item_relationships (
     source_item_id INTEGER NOT NULL,
     target_item_id INTEGER NOT NULL,
     relationship_type TEXT NOT NULL CHECK(relationship_type IN ('blocks', 'depends_on', 'relates_to', 'duplicates')),
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TIMESTAMP DEFAULT (datetime('now')),
     UNIQUE (source_item_id, target_item_id, relationship_type),
     FOREIGN KEY (source_item_id) REFERENCES items(id) ON DELETE CASCADE,
     FOREIGN KEY (target_item_id) REFERENCES items(id) ON DELETE CASCADE
@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS tags (
     project_id TEXT NOT NULL,
     name TEXT NOT NULL,
     color TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TIMESTAMP DEFAULT (datetime('now')),
     UNIQUE (project_id, name),
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
@@ -111,7 +111,7 @@ CREATE INDEX IF NOT EXISTS idx_project_tags ON tags(project_id);
 CREATE TABLE IF NOT EXISTS item_tags (
     item_id INTEGER NOT NULL,
     tag_id INTEGER NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TIMESTAMP DEFAULT (datetime('now')),
     PRIMARY KEY (item_id, tag_id),
     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
     FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS item_files (
     file_path TEXT NOT NULL,
     line_start INTEGER DEFAULT NULL,
     line_end INTEGER DEFAULT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TIMESTAMP DEFAULT (datetime('now')),
     UNIQUE (item_id, file_path, line_start, line_end),
     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
 );
@@ -136,7 +136,7 @@ CREATE TABLE IF NOT EXISTS item_decisions (
     choice TEXT NOT NULL,
     rejected_alternatives TEXT DEFAULT NULL,
     rationale TEXT DEFAULT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TIMESTAMP DEFAULT (datetime('now')),
     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
 );
 
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS status_history (
     old_status_id INTEGER DEFAULT NULL,
     new_status_id INTEGER NOT NULL,
     change_type TEXT NOT NULL CHECK(change_type IN ('create', 'advance', 'revert', 'set', 'close', 'auto_advance')),
-    changed_at TEXT DEFAULT (datetime('now')),
+    changed_at TIMESTAMP DEFAULT (datetime('now')),
     FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE,
     FOREIGN KEY (old_status_id) REFERENCES statuses(id),
     FOREIGN KEY (new_status_id) REFERENCES statuses(id)
@@ -167,7 +167,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
     content_hash TEXT NOT NULL,
     model TEXT NOT NULL DEFAULT 'nomic-embed-text-v1.5',
     vector BLOB NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
+    created_at TIMESTAMP DEFAULT (datetime('now')),
     UNIQUE (source_type, source_id, model)
 );
 

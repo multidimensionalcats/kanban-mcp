@@ -151,8 +151,9 @@ class TestKanbanWebAPI(unittest.TestCase):
         # Verify update actually persisted in DB (#8233)
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT content FROM updates "
-                "WHERE id = %s",
+                self.db._sql(
+                    "SELECT content FROM updates "
+                    "WHERE id = %s"),
                 (data['update_id'],)
             )
             row = cursor.fetchone()
@@ -177,7 +178,8 @@ class TestKanbanWebAPI(unittest.TestCase):
         # Verify the link actually exists in DB (#8233)
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT item_id FROM update_items WHERE update_id = %s",
+                self.db._sql(
+                    "SELECT item_id FROM update_items WHERE update_id = %s"),
                 (data['update_id'],)
             )
             row = cursor.fetchone()
@@ -264,8 +266,9 @@ class TestKanbanWebAPI(unittest.TestCase):
         # Verify project is gone
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT id FROM projects "
-                "WHERE id = %s",
+                self.db._sql(
+                    "SELECT id FROM projects "
+                    "WHERE id = %s"),
                 (self.test_project_id,)
             )
             self.assertIsNone(cursor.fetchone())

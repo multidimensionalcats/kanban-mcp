@@ -1,0 +1,22 @@
+FROM python:3.13-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    default-mysql-client \
+    git \
+    netcat-openbsd \
+    sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir pipx build && pipx ensurepath
+ENV PATH="/root/.local/bin:$PATH"
+
+WORKDIR /src
+COPY . .
+
+# Build the wheel once at image build time
+RUN python -m build --wheel --outdir /dist
+
+# Copy test script and sources needed for pytest
+# (pipx install happens at runtime so extras can vary per scenario)
+ENTRYPOINT ["bash", "tests/functional-test.sh"]

@@ -42,7 +42,8 @@ class SQLiteBackend(DatabaseBackend):
         # Open persistent connection
         self._conn = sqlite3.connect(
             self._db_path,
-            check_same_thread=False)
+            check_same_thread=False,
+            detect_types=sqlite3.PARSE_DECLTYPES)
 
         # Enable WAL mode for file-based databases
         if self._db_path != ':memory:':
