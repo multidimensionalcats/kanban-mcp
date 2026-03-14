@@ -912,6 +912,9 @@ def _run_with_gunicorn(host, port):
     options = {
         'bind': f'{host}:{port}',
         'workers': 1,
+        'worker_class': 'gthread',
+        'threads': 4,
+        'preload_app': True,
         'accesslog': '-',
     }
     KanbanGunicorn(app, options).run()
