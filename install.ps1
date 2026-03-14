@@ -1,21 +1,23 @@
 #
 # kanban-mcp install script (Windows PowerShell)
-# Installs kanban-mcp (via pipx), sets up MySQL (local, remote, or Docker),
-# and writes the .env config file.
+# Installs kanban-mcp (via pipx), chooses a database backend (SQLite by
+# default, or MySQL/MariaDB), and runs kanban-setup.
 #
 # Interactive (default):
 #   .\install.ps1
 #   irm https://raw.githubusercontent.com/.../install.ps1 | iex
 #
 # Non-interactive:
-#   .\install.ps1 -Auto                           # local MySQL
+#   .\install.ps1 -Auto                           # SQLite (zero config)
+#   .\install.ps1 -Auto -MySQL                    # local MySQL
 #   .\install.ps1 -Auto -Docker                   # MySQL via Docker
 #   .\install.ps1 -Auto -DbHost remote.host       # remote MySQL
 #
 # Options:
 #   -Auto            Non-interactive mode (no prompts)
-#   -Docker          Use Docker for MySQL (starts docker compose stack)
-#   -DbHost HOST     MySQL host (default: localhost)
+#   -MySQL           Use MySQL/MariaDB backend (default is SQLite)
+#   -Docker          Use Docker for MySQL (implies -MySQL)
+#   -DbHost HOST     MySQL host (implies -MySQL; default: localhost)
 #   -WithSemantic    Also install semantic search dependencies
 #   -Upgrade         Upgrade existing Docker install (re-downloads files, rebuilds, restarts)
 #   -Uninstall       Remove kanban-mcp (package, config, optionally DB and Docker data)
@@ -24,6 +26,7 @@
 param(
     [switch]$Auto,
     [switch]$Docker,
+    [switch]$MySQL,
     [string]$DbHost = "",
     [switch]$WithSemantic,
     [switch]$Upgrade,
@@ -36,6 +39,7 @@ function Install-KanbanMcpServer {
     param(
         [switch]$Auto,
         [switch]$Docker,
+        [switch]$MySQL,
         [string]$DbHost = "",
         [switch]$WithSemantic,
         [switch]$Upgrade,
@@ -314,8 +318,15 @@ function Install-Pipx {
 }
 
 function Install-KanbanMcp {
+    # Build extras string based on backend + semantic flags
+    $extras = @()
+    if ($script:Backend -eq "mysql") { $extras += "mysql" }
+    if ($WithSemantic) { $extras += "semantic" }
+    $extrasStr = $extras -join ","
+
     $pkg = "kanban-mcp"
-    if ($WithSemantic) { $pkg = "kanban-mcp[semantic]" }
+    if ($extrasStr) { $pkg = "kanban-mcp[$extrasStr]" }
+
     # If run from a checkout with pyproject.toml, install from local
     # source instead of PyPI (ensures code and migrations match).
     $src = $pkg
@@ -323,7 +334,7 @@ function Install-KanbanMcp {
         $content = Get-Content "pyproject.toml" -Raw -ErrorAction SilentlyContinue
         if ($content -match 'name = "kanban-mcp"') {
             $src = "."
-            if ($WithSemantic) { $src = ".[semantic]" }
+            if ($extrasStr) { $src = ".[$extrasStr]" }
             Write-Host "Installing $pkg from local checkout via pipx..."
         } else {
             Write-Host "Installing $pkg via pipx..."
@@ -451,7 +462,14 @@ KANBAN_DB_NAME=$Name
 }
 
 function Write-NextSteps {
-    param([string]$Host_, [string]$User, [string]$Password, [string]$Name, [switch]$IsDocker)
+    param(
+        [string]$Backend,
+        [string]$Host_ = "",
+        [string]$User = "",
+        [string]$Password = "",
+        [string]$Name = "",
+        [switch]$IsDocker
+    )
 
     Write-Host ""
     Write-Host "=== Setup complete ===" -ForegroundColor Green
@@ -460,8 +478,21 @@ function Write-NextSteps {
     Write-Host ""
     Write-Host "1. Add kanban-mcp to your MCP client config."
     Write-Host ""
-    Write-Host "   Claude Desktop config:"
-    Write-Host @"
+
+    if ($Backend -eq "sqlite") {
+        Write-Host "   Claude Desktop config:"
+        Write-Host @"
+   {
+     "mcpServers": {
+       "kanban": {
+         "command": "kanban-mcp"
+       }
+     }
+   }
+"@
+    } else {
+        Write-Host "   Claude Desktop config:"
+        Write-Host @"
    {
      "mcpServers": {
        "kanban": {
@@ -476,8 +507,10 @@ function Write-NextSteps {
      }
    }
 "@
+    }
+
     Write-Host ""
-    if ($IsDocker) {
+    if ($Backend -eq "mysql" -and $IsDocker) {
         Write-Host "2. The web UI is running at http://localhost:5000"
     } else {
         Write-Host "2. Start the web UI (optional):"
@@ -520,7 +553,7 @@ function Write-NextSteps {
     }
 }
 
-# ─── Step 1: Python & kanban-mcp ────────────────────────────────────
+# ─── Step 1: Python & backend selection ─────────────────────────────
 
 Test-Python
 
@@ -528,6 +561,112 @@ if (-not $script:Python) {
     # Test-Python failed — error already printed
     return
 }
+
+Write-Host ""
+
+# ─── Choose backend (before install so we pick the right extras) ───
+
+$script:Backend = ""   # "sqlite" or "mysql"
+$MysqlMethod = ""      # "local", "remote", or "docker" (only when Backend=mysql)
+
+if ($Docker -or $DbHost -or $MySQL) {
+    $script:Backend = "mysql"
+} elseif ($env:KANBAN_DB_USER -and $env:KANBAN_DB_PASSWORD -and $env:KANBAN_DB_NAME) {
+    $script:Backend = "mysql"
+} elseif ($Auto) {
+    $script:Backend = "sqlite"
+} else {
+    Write-Host "Choose your database backend:"
+    Write-Host "  1) SQLite (recommended, zero config)"
+    Write-Host "  2) MySQL/MariaDB (local)"
+    Write-Host "  3) MySQL/MariaDB (remote)"
+    Write-Host "  4) MySQL via Docker"
+    $choice = Read-Host "Choice [1]"
+    if (-not $choice) { $choice = "1" }
+
+    switch ($choice) {
+        "1" { $script:Backend = "sqlite" }
+        "2" { $script:Backend = "mysql"; $MysqlMethod = "local" }
+        "3" { $script:Backend = "mysql"; $MysqlMethod = "remote" }
+        "4" { $script:Backend = "mysql"; $MysqlMethod = "docker" }
+        default {
+            Write-Host "Invalid choice. Using SQLite."
+            $script:Backend = "sqlite"
+        }
+    }
+}
+
+# For MySQL backend, determine connection method if not set above
+if ($script:Backend -eq "mysql" -and -not $MysqlMethod) {
+    if ($Docker) {
+        $MysqlMethod = "docker"
+    } elseif ($DbHost) {
+        $MysqlMethod = "remote"
+    } else {
+        $MysqlMethod = "local"
+    }
+}
+
+if ($script:Backend -eq "mysql") {
+    switch ($MysqlMethod) {
+        "local" {
+            if (-not $DbHost) { $DbHost = if ($env:KANBAN_DB_HOST) { $env:KANBAN_DB_HOST } else { "localhost" } }
+            if (Test-MysqlRunning -Host_ $DbHost) {
+                Write-Host "MySQL is running on $DbHost."
+            } else {
+                Write-Host "MySQL is not running on $DbHost."
+                if (Test-DockerAvailable) {
+                    if ($Auto) {
+                        Write-Host "Use -Docker flag to start MySQL via Docker."
+                        Write-Host "Or start MySQL manually and re-run this script."
+                        return
+                    }
+                    $startDocker = Read-Host "Start MySQL via Docker? [Y/n]"
+                    if (-not $startDocker) { $startDocker = "Y" }
+                    if ($startDocker -match "^[Yy]") {
+                        $MysqlMethod = "docker"
+                    } else {
+                        Write-Host ""
+                        Write-Host "Please start MySQL and re-run this script."
+                        return
+                    }
+                } else {
+                    Write-Host ""
+                    Write-Host "Docker is not available either. Please install MySQL or Docker:"
+                    Write-Host "  MySQL: https://dev.mysql.com/downloads/"
+                    Write-Host "  Docker: https://docs.docker.com/get-docker/"
+                    return
+                }
+            }
+        }
+        "remote" {
+            if (-not $DbHost) {
+                $DbHost = Read-Host "MySQL host"
+            }
+            if (-not $DbHost) {
+                Write-Host "Error: No host provided." -ForegroundColor Red
+                return
+            }
+            $DbPort = "3306"
+            if (-not $Auto) {
+                $portInput = Read-Host "MySQL port [$DbPort]"
+                if ($portInput) { $DbPort = $portInput }
+            }
+            Write-Host "Will connect to MySQL at ${DbHost}:${DbPort}"
+        }
+        "docker" {
+            if (-not (Test-DockerAvailable)) {
+                Write-Host "Error: Docker is not installed or docker compose is not available." -ForegroundColor Red
+                Write-Host "Install Docker: https://docs.docker.com/get-docker/"
+                return
+            }
+        }
+    }
+}
+
+Write-Host ""
+
+# ─── Step 2: Install kanban-mcp ────────────────────────────────────
 
 if (-not (Get-Command "kanban-mcp" -ErrorAction SilentlyContinue)) {
     Write-Host ""
@@ -551,95 +690,15 @@ if (-not (Get-Command "kanban-mcp" -ErrorAction SilentlyContinue)) {
 
 Write-Host ""
 
-# ─── Step 2: MySQL setup ────────────────────────────────────────────
-
-$MysqlMethod = ""  # "local", "remote", or "docker"
-
-if ($Docker) {
-    $MysqlMethod = "docker"
-} elseif ($DbHost) {
-    $MysqlMethod = "remote"
-} elseif ($Auto) {
-    $MysqlMethod = "local"
-} else {
-    Write-Host "How do you want to connect to MySQL?"
-    Write-Host "  1) Local MySQL (default)"
-    Write-Host "  2) Remote MySQL server"
-    Write-Host "  3) Docker (starts MySQL in a container)"
-    $choice = Read-Host "Choice [1]"
-    if (-not $choice) { $choice = "1" }
-
-    switch ($choice) {
-        "1" { $MysqlMethod = "local" }
-        "2" { $MysqlMethod = "remote" }
-        "3" { $MysqlMethod = "docker" }
-        default {
-            Write-Host "Invalid choice. Using local MySQL."
-            $MysqlMethod = "local"
-        }
-    }
-}
-
-switch ($MysqlMethod) {
-    "local" {
-        if (-not $DbHost) { $DbHost = if ($env:KANBAN_DB_HOST) { $env:KANBAN_DB_HOST } else { "localhost" } }
-        if (Test-MysqlRunning -Host_ $DbHost) {
-            Write-Host "MySQL is running on $DbHost."
-        } else {
-            Write-Host "MySQL is not running on $DbHost."
-            if (Test-DockerAvailable) {
-                if ($Auto) {
-                    Write-Host "Use -Docker flag to start MySQL via Docker."
-                    Write-Host "Or start MySQL manually and re-run this script."
-                    return
-                }
-                $startDocker = Read-Host "Start MySQL via Docker? [Y/n]"
-                if (-not $startDocker) { $startDocker = "Y" }
-                if ($startDocker -match "^[Yy]") {
-                    $MysqlMethod = "docker"
-                } else {
-                    Write-Host ""
-                    Write-Host "Please start MySQL and re-run this script."
-                    return
-                }
-            } else {
-                Write-Host ""
-                Write-Host "Docker is not available either. Please install MySQL or Docker:"
-                Write-Host "  MySQL: https://dev.mysql.com/downloads/"
-                Write-Host "  Docker: https://docs.docker.com/get-docker/"
-                return
-            }
-        }
-    }
-    "remote" {
-        if (-not $DbHost) {
-            $DbHost = Read-Host "MySQL host"
-        }
-        if (-not $DbHost) {
-            Write-Host "Error: No host provided." -ForegroundColor Red
-            return
-        }
-        $DbPort = "3306"
-        if (-not $Auto) {
-            $portInput = Read-Host "MySQL port [$DbPort]"
-            if ($portInput) { $DbPort = $portInput }
-        }
-        Write-Host "Will connect to MySQL at ${DbHost}:${DbPort}"
-    }
-    "docker" {
-        if (-not (Test-DockerAvailable)) {
-            Write-Host "Error: Docker is not installed or docker compose is not available." -ForegroundColor Red
-            Write-Host "Install Docker: https://docs.docker.com/get-docker/"
-            return
-        }
-    }
-}
-
-Write-Host ""
-
 # ─── Step 3: Execute the chosen path ────────────────────────────────
 
-if ($MysqlMethod -eq "docker") {
+if ($script:Backend -eq "sqlite") {
+    # SQLite path: zero config, just run setup + migrations
+    Write-Host "Setting up SQLite backend..."
+    kanban-setup --auto --backend sqlite
+    Write-NextSteps -Backend "sqlite"
+
+} elseif ($MysqlMethod -eq "docker") {
     $dbName = if ($env:KANBAN_DB_NAME) { $env:KANBAN_DB_NAME } else { "kanban" }
     $dbUser = if ($env:KANBAN_DB_USER) { $env:KANBAN_DB_USER } else { "kanban" }
     $dbPassword = if ($env:KANBAN_DB_PASSWORD) { $env:KANBAN_DB_PASSWORD } else { "changeme" }
@@ -683,14 +742,14 @@ if ($MysqlMethod -eq "docker") {
     Write-Host ""
 
     Write-EnvFile -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName -Port $DbPort
-    Write-NextSteps -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName -IsDocker
+    Write-NextSteps -Backend "mysql" -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName -IsDocker
 
     Write-Host "Docker compose files: $dockerDir"
     Write-Host "Manage with: docker compose -f $(Join-Path $dockerDir 'docker-compose.yml') [up|down|logs]"
     Write-Host ""
 
 } else {
-    # Local or remote: gather creds and run DB setup
+    # Local or remote MySQL: gather creds and run DB setup
 
     if ($Auto) {
         $dbName = if ($env:KANBAN_DB_NAME) { $env:KANBAN_DB_NAME } else { "kanban" }
@@ -710,7 +769,9 @@ if ($MysqlMethod -eq "docker") {
         $dbUser = Read-Host "Database user [kanban]"
         if (-not $dbUser) { $dbUser = "kanban" }
 
-        $dbPassword = Read-Host "Database password (leave blank to auto-generate)"
+        $dbPwSecure = Read-Host "Database password (leave blank to auto-generate)" -AsSecureString
+        $dbPassword = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+            [Runtime.InteropServices.Marshal]::SecureStringToBSTR($dbPwSecure))
         if (-not $dbPassword) {
             $dbPassword = & $script:Python -c "import secrets; print(secrets.token_urlsafe(16))"
             Write-Host "Generated password: $dbPassword"
@@ -723,8 +784,10 @@ if ($MysqlMethod -eq "docker") {
         $rootUserInput = Read-Host "MySQL root user for setup [root]"
         if ($rootUserInput) { $env:MYSQL_ROOT_USER = $rootUserInput }
 
-        $rootPwInput = Read-Host "MySQL root password (blank for socket auth)"
-        if ($rootPwInput) { $env:MYSQL_ROOT_PASSWORD = $rootPwInput }
+        $rootPwSecure = Read-Host "MySQL root password (blank for socket auth)" -AsSecureString
+        $rootPwPlain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+            [Runtime.InteropServices.Marshal]::SecureStringToBSTR($rootPwSecure))
+        if ($rootPwPlain) { $env:MYSQL_ROOT_PASSWORD = $rootPwPlain }
     }
 
     Write-Host ""
@@ -745,12 +808,9 @@ if ($MysqlMethod -eq "docker") {
 
     Invoke-DbSetup -Host_ $DbHost -Name $dbName -User $dbUser -Password $dbPassword -Port $(if ($DbPort) { $DbPort } else { "3306" })
 
-    if ($WithSemantic) {
-        Write-Host ""
-        Write-Host "--- Installing semantic search dependencies ---"
-        pip install "kanban-mcp[semantic]"
-        Write-Host "Semantic search dependencies installed."
-    }
+    $portVal = if ($DbPort) { $DbPort } else { "3306" }
+    Write-EnvFile -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName -Port $portVal
+    Write-NextSteps -Backend "mysql" -Host_ $DbHost -User $dbUser -Password $dbPassword -Name $dbName
 }
 
 } # end Install-KanbanMcpServer
@@ -759,6 +819,7 @@ if ($MysqlMethod -eq "docker") {
 $splat = @{}
 if ($Auto) { $splat.Auto = $true }
 if ($Docker) { $splat.Docker = $true }
+if ($MySQL) { $splat.MySQL = $true }
 if ($DbHost) { $splat.DbHost = $DbHost }
 if ($WithSemantic) { $splat.WithSemantic = $true }
 if ($Upgrade) { $splat.Upgrade = $true }

@@ -227,7 +227,23 @@ jobs:
         run: bandit -r kanban_mcp/ -c pyproject.toml
 
   install-linux:
-    name: Install script (Linux)
+    name: Install script (Linux, SQLite)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+
+      - name: Run install.sh --auto (defaults to SQLite)
+        run: bash install.sh --auto
+
+      - name: Verify kanban-mcp is installed
+        run: command -v kanban-mcp && echo "kanban-mcp found"
+
+      - name: Verify kanban-cli works
+        run: kanban-cli --project /tmp summary
+
+  install-linux-mysql:
+    name: Install script (Linux, MySQL)
     runs-on: ubuntu-latest
 
     services:
@@ -249,7 +265,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
-      - name: Run install.sh --auto
+      - name: Run install.sh --auto --mysql
         env:
           KANBAN_DB_HOST: 127.0.0.1
           KANBAN_DB_USER: kanban
@@ -257,7 +273,7 @@ jobs:
           KANBAN_DB_NAME: kanban
           MYSQL_ROOT_USER: root
           MYSQL_ROOT_PASSWORD: rootpass
-        run: bash install.sh --auto
+        run: bash install.sh --auto --mysql
 
       - name: Verify kanban-mcp is installed
         run: command -v kanban-mcp && echo "kanban-mcp found"
@@ -271,32 +287,23 @@ jobs:
         run: kanban-cli --project /tmp summary
 
   install-macos:
-    name: Install script (macOS)
+    name: Install script (macOS, SQLite)
     runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
-      - name: Install MySQL
-        run: |
-          brew install mysql
-          brew services start mysql
-          sleep 5
-          mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'rootpass';"
-
-      - name: Run install.sh --auto
-        env:
-          KANBAN_DB_HOST: 127.0.0.1
-          MYSQL_ROOT_PASSWORD: rootpass
+      - name: Run install.sh --auto (defaults to SQLite)
         run: bash install.sh --auto
 
+      - name: Verify kanban-mcp is installed
+        run: command -v kanban-mcp && echo "kanban-mcp found"
+
       - name: Verify kanban-cli works
-        env:
-          KANBAN_DB_HOST: 127.0.0.1
         run: kanban-cli --project /tmp summary
 
   install-windows:
-    name: Install script (Windows)
+    name: Install script (Windows, SQLite)
     runs-on: windows-latest
 
     steps:
@@ -316,11 +323,9 @@ jobs:
           }
           Write-Host "install.ps1 syntax OK"
 
-      - name: Run install.ps1 --auto (no DB)
+      - name: Run install.ps1 -Auto (defaults to SQLite)
         shell: pwsh
-        run: |
-          # Install kanban-mcp; DB setup will be skipped (no MySQL running)
-          .\install.ps1 -Auto
+        run: .\install.ps1 -Auto
 
       - name: Verify kanban-mcp is installed
         shell: pwsh
@@ -331,13 +336,6 @@ jobs:
           }
           Write-Host "kanban-mcp found at: $(Get-Command kanban-mcp | Select-Object -ExpandProperty Source)"
 
-      - name: Install dev dependencies
+      - name: Verify kanban-cli works
         shell: pwsh
-        run: pip install -e ".[dev]"
-
-      - name: Run non-DB tests
-        shell: pwsh
-        env:
-          KANBAN_BACKEND: sqlite
-        run: >-
-          pytest tests/test_sqlite_backend.py tests/test_export.py -x -q
+        run: kanban-cli --project $env:TEMP summary

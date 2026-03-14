@@ -4,10 +4,18 @@ import logging
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
 from kanban_mcp.db.base import DatabaseBackend
+
+# Register custom timestamp adapter/converter to replace the
+# deprecated built-in ones (removed in a future Python version).
+sqlite3.register_adapter(
+    datetime, lambda dt: dt.isoformat())
+sqlite3.register_converter(
+    "TIMESTAMP", lambda b: datetime.fromisoformat(b.decode()))
 
 logger = logging.getLogger(__name__)
 

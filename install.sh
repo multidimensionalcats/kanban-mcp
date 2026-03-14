@@ -1,22 +1,24 @@
 #!/bin/bash
 #
 # kanban-mcp install script
-# Installs kanban-mcp (via pipx), sets up MySQL (local, remote, or Docker),
-# and writes the .env config file.
+# Installs kanban-mcp (via pipx), chooses a database backend (SQLite by
+# default, or MySQL/MariaDB), and runs kanban-setup.
 #
 # Interactive (default):
 #   ./install.sh
 #   curl -fsSL https://raw.githubusercontent.com/.../install.sh | bash
 #
 # Non-interactive:
-#   ./install.sh --auto                        # local MySQL, socket auth
+#   ./install.sh --auto                        # SQLite (zero config)
+#   ./install.sh --auto --mysql                # local MySQL, socket auth
 #   ./install.sh --auto --docker               # MySQL via Docker
 #   ./install.sh --auto --db-host remote.host  # remote MySQL
 #
 # Options:
 #   --auto            Non-interactive mode (no prompts)
-#   --docker          Use Docker for MySQL (starts docker compose stack)
-#   --db-host HOST    MySQL host (default: localhost)
+#   --mysql           Use MySQL/MariaDB backend (default is SQLite)
+#   --docker          Use Docker for MySQL (implies --mysql)
+#   --db-host HOST    MySQL host (implies --mysql; default: localhost)
 #   --with-semantic   Also install semantic search dependencies
 #   --upgrade         Upgrade existing Docker install (re-downloads files, rebuilds, restarts)
 #   --uninstall       Remove kanban-mcp (package, config, optionally DB and Docker data)
@@ -35,6 +37,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 AUTO=false
 USE_DOCKER=false
+USE_MYSQL=false
 WITH_SEMANTIC=false
 UPGRADE=false
 UNINSTALL=false
@@ -44,6 +47,7 @@ for arg in "$@"; do
     case "$arg" in
         --auto) AUTO=true ;;
         --docker) USE_DOCKER=true ;;
+        --mysql) USE_MYSQL=true ;;
         --with-semantic) WITH_SEMANTIC=true ;;
         --upgrade) UPGRADE=true ;;
         --uninstall) UNINSTALL=true ;;
@@ -51,12 +55,13 @@ for arg in "$@"; do
             # handled below with shift
             ;;
         --help|-h)
-            echo "Usage: ./install.sh [--auto] [--docker] [--db-host HOST] [--with-semantic] [--upgrade] [--uninstall]"
+            echo "Usage: ./install.sh [--auto] [--mysql] [--docker] [--db-host HOST] [--with-semantic] [--upgrade] [--uninstall]"
             echo ""
             echo "Options:"
             echo "  --auto            Non-interactive mode (uses env vars or defaults)"
-            echo "  --docker          Use Docker for MySQL"
-            echo "  --db-host HOST    MySQL host (default: localhost)"
+            echo "  --mysql           Use MySQL/MariaDB backend (default is SQLite)"
+            echo "  --docker          Use Docker for MySQL (implies --mysql)"
+            echo "  --db-host HOST    MySQL host (implies --mysql; default: localhost)"
             echo "  --with-semantic   Also install semantic search dependencies"
             echo "  --upgrade         Upgrade an existing Docker installation"
             echo "  --uninstall       Remove kanban-mcp (package, config, optionally DB and Docker data)"
@@ -309,17 +314,21 @@ install_pipx() {
 }
 
 install_kanban_mcp() {
-    local pkg="kanban-mcp"
+    # Build extras string based on backend + semantic flags
+    local extras=""
+    if [ "$BACKEND" = "mysql" ]; then extras="mysql"; fi
     if [ "$WITH_SEMANTIC" = true ]; then
-        pkg="kanban-mcp[semantic]"
+        if [ -n "$extras" ]; then extras="${extras},semantic"
+        else extras="semantic"; fi
     fi
+    local pkg="kanban-mcp"
+    if [ -n "$extras" ]; then pkg="kanban-mcp[${extras}]"; fi
+
     # If run from a checkout with pyproject.toml, install from local
     # source instead of PyPI (ensures code and migrations match).
     if [ -f "pyproject.toml" ] && grep -q 'name = "kanban-mcp"' pyproject.toml 2>/dev/null; then
         local src="."
-        if [ "$WITH_SEMANTIC" = true ]; then
-            src=".[semantic]"
-        fi
+        if [ -n "$extras" ]; then src=".[${extras}]"; fi
         echo "Installing $pkg from local checkout via pipx..."
         if command -v pipx &>/dev/null; then
             pipx install "$src"
@@ -451,7 +460,8 @@ EOF
 }
 
 print_next_steps() {
-    local db_host="$1" db_user="$2" db_password="$3" db_name="$4" is_docker="${5:-false}"
+    local backend="$1"
+    shift
 
     echo
     echo "=== Setup complete ==="
@@ -460,22 +470,37 @@ print_next_steps() {
     echo
     echo "1. Add kanban-mcp to your MCP client config."
     echo
-    echo "   Claude Desktop (~/.config/Claude/claude_desktop_config.json):"
-    echo '   {'
-    echo '     "mcpServers": {'
-    echo '       "kanban": {'
-    echo '         "command": "kanban-mcp",'
-    echo '         "env": {'
-    echo "           \"KANBAN_DB_HOST\": \"$db_host\","
-    echo "           \"KANBAN_DB_USER\": \"$db_user\","
-    echo "           \"KANBAN_DB_PASSWORD\": \"$db_password\","
-    echo "           \"KANBAN_DB_NAME\": \"$db_name\""
-    echo '         }'
-    echo '       }'
-    echo '     }'
-    echo '   }'
+
+    if [ "$backend" = "sqlite" ]; then
+        echo "   Claude Desktop (~/.config/Claude/claude_desktop_config.json):"
+        echo '   {'
+        echo '     "mcpServers": {'
+        echo '       "kanban": {'
+        echo '         "command": "kanban-mcp"'
+        echo '       }'
+        echo '     }'
+        echo '   }'
+    else
+        local db_host="$1" db_user="$2" db_password="$3" db_name="$4"
+        local is_docker="${5:-false}"
+        echo "   Claude Desktop (~/.config/Claude/claude_desktop_config.json):"
+        echo '   {'
+        echo '     "mcpServers": {'
+        echo '       "kanban": {'
+        echo '         "command": "kanban-mcp",'
+        echo '         "env": {'
+        echo "           \"KANBAN_DB_HOST\": \"$db_host\","
+        echo "           \"KANBAN_DB_USER\": \"$db_user\","
+        echo "           \"KANBAN_DB_PASSWORD\": \"$db_password\","
+        echo "           \"KANBAN_DB_NAME\": \"$db_name\""
+        echo '         }'
+        echo '       }'
+        echo '     }'
+        echo '   }'
+    fi
     echo
-    if [ "$is_docker" = true ]; then
+
+    if [ "$backend" = "mysql" ] && [ "${is_docker:-false}" = true ]; then
         echo "2. The web UI is running at http://localhost:5000"
     else
         echo "2. Start the web UI (optional):"
@@ -517,12 +542,129 @@ print_next_steps() {
     fi
 }
 
-# ─── Step 1: Python & kanban-mcp ────────────────────────────────────
+# ─── Step 1: Python & backend selection ─────────────────────────────
 
 check_python
 
+echo
+
+# Determine backend before installing so we pick the right extras
+BACKEND=""       # "sqlite" or "mysql"
+MYSQL_METHOD=""  # "local", "remote", or "docker" (only when BACKEND=mysql)
+
+if [ "$USE_DOCKER" = true ] || [ -n "$DB_HOST_ARG" ] || [ "$USE_MYSQL" = true ]; then
+    BACKEND="mysql"
+elif [ -n "${KANBAN_DB_USER:-}" ] && [ -n "${KANBAN_DB_PASSWORD:-}" ] && [ -n "${KANBAN_DB_NAME:-}" ]; then
+    BACKEND="mysql"
+elif [ "$AUTO" = true ]; then
+    BACKEND="sqlite"
+else
+    # Interactive: ask for backend
+    echo "Choose your database backend:"
+    echo "  1) SQLite (recommended, zero config)"
+    echo "  2) MySQL/MariaDB (local)"
+    echo "  3) MySQL/MariaDB (remote)"
+    echo "  4) MySQL via Docker"
+    read -rp "Choice [1]: " BACKEND_CHOICE < /dev/tty
+    BACKEND_CHOICE=${BACKEND_CHOICE:-1}
+
+    case "$BACKEND_CHOICE" in
+        1) BACKEND="sqlite" ;;
+        2) BACKEND="mysql"; MYSQL_METHOD="local" ;;
+        3) BACKEND="mysql"; MYSQL_METHOD="remote" ;;
+        4) BACKEND="mysql"; MYSQL_METHOD="docker" ;;
+        *)
+            echo "Invalid choice. Using SQLite."
+            BACKEND="sqlite"
+            ;;
+    esac
+fi
+
+# For MySQL backend, determine connection method if not set above
+if [ "$BACKEND" = "mysql" ] && [ -z "$MYSQL_METHOD" ]; then
+    if [ "$USE_DOCKER" = true ]; then
+        MYSQL_METHOD="docker"
+    elif [ -n "$DB_HOST_ARG" ]; then
+        MYSQL_METHOD="remote"
+        DB_HOST="$DB_HOST_ARG"
+    else
+        MYSQL_METHOD="local"
+    fi
+fi
+
+if [ "$BACKEND" = "mysql" ]; then
+    case "$MYSQL_METHOD" in
+        local)
+            DB_HOST="${KANBAN_DB_HOST:-localhost}"
+            local_port="${KANBAN_DB_PORT:-3306}"
+            if [ "$AUTO" != true ]; then
+                read -rp "MySQL/MariaDB port [$local_port]: " DB_PORT_INPUT < /dev/tty
+                local_port=${DB_PORT_INPUT:-$local_port}
+            fi
+            if check_mysql_running "$DB_HOST" "$local_port"; then
+                echo "MySQL/MariaDB is running on $DB_HOST:$local_port."
+            else
+                echo "MySQL/MariaDB is not running on $DB_HOST."
+                if check_docker; then
+                    if [ "$AUTO" = true ]; then
+                        echo "Use --docker flag to start MySQL via Docker."
+                        echo "Or start MySQL manually and re-run this script."
+                        exit 1
+                    fi
+                    read -rp "Start MySQL via Docker? [Y/n] " START_DOCKER < /dev/tty
+                    START_DOCKER=${START_DOCKER:-Y}
+                    if [[ "$START_DOCKER" =~ ^[Yy] ]]; then
+                        MYSQL_METHOD="docker"
+                    else
+                        echo
+                        echo "Please start MySQL/MariaDB and re-run this script."
+                        echo "  Ubuntu/Debian: sudo systemctl start mysql"
+                        echo "  macOS:         brew services start mysql"
+                        echo "  Arch/Fedora:   sudo systemctl start mariadb"
+                        exit 1
+                    fi
+                else
+                    echo
+                    echo "Docker is not available either. Please install MySQL/MariaDB or Docker:"
+                    echo "  MySQL:   https://dev.mysql.com/downloads/"
+                    echo "  MariaDB: https://mariadb.org/download/"
+                    echo "  Docker:  https://docs.docker.com/get-docker/"
+                    exit 1
+                fi
+            fi
+            ;;
+
+        remote)
+            if [ -z "$DB_HOST" ]; then
+                read -rp "MySQL host: " DB_HOST < /dev/tty
+            fi
+            if [ -z "$DB_HOST" ]; then
+                echo "Error: No host provided."
+                exit 1
+            fi
+            local_port="3306"
+            if [ "$AUTO" = false ]; then
+                read -rp "MySQL port [$local_port]: " DB_PORT_INPUT < /dev/tty
+                local_port=${DB_PORT_INPUT:-$local_port}
+            fi
+            echo "Will connect to MySQL at $DB_HOST:$local_port"
+            ;;
+
+        docker)
+            if ! check_docker; then
+                echo "Error: Docker is not installed or docker compose is not available."
+                echo "Install Docker: https://docs.docker.com/get-docker/"
+                exit 1
+            fi
+            ;;
+    esac
+fi
+
+echo
+
+# ─── Step 2: Install kanban-mcp ────────────────────────────────────
+
 if ! command -v kanban-mcp &>/dev/null; then
-    echo
     if [ "$AUTO" = true ]; then
         # Auto mode: install without asking
         if ! check_pipx; then
@@ -548,110 +690,15 @@ fi
 
 echo
 
-# ─── Step 2: MySQL setup ────────────────────────────────────────────
-
-# Determine MySQL connection method
-MYSQL_METHOD=""  # "local", "remote", or "docker"
-
-if [ "$USE_DOCKER" = true ]; then
-    MYSQL_METHOD="docker"
-elif [ -n "$DB_HOST_ARG" ]; then
-    MYSQL_METHOD="remote"
-    DB_HOST="$DB_HOST_ARG"
-elif [ "$AUTO" = true ]; then
-    # Auto mode without --docker or --db-host: assume local MySQL
-    MYSQL_METHOD="local"
-else
-    # Interactive: detect and ask
-    echo "How do you want to connect to MySQL/MariaDB?"
-    echo "  1) Local MySQL/MariaDB (default)"
-    echo "  2) Remote MySQL/MariaDB server"
-    echo "  3) Docker (starts MySQL in a container)"
-    read -rp "Choice [1]: " MYSQL_CHOICE < /dev/tty
-    MYSQL_CHOICE=${MYSQL_CHOICE:-1}
-
-    case "$MYSQL_CHOICE" in
-        1) MYSQL_METHOD="local" ;;
-        2) MYSQL_METHOD="remote" ;;
-        3) MYSQL_METHOD="docker" ;;
-        *)
-            echo "Invalid choice. Using local MySQL."
-            MYSQL_METHOD="local"
-            ;;
-    esac
-fi
-
-case "$MYSQL_METHOD" in
-    local)
-        DB_HOST="${KANBAN_DB_HOST:-localhost}"
-        local_port="${KANBAN_DB_PORT:-3306}"
-        if [ "$AUTO" != true ]; then
-            read -rp "MySQL/MariaDB port [$local_port]: " DB_PORT_INPUT < /dev/tty
-            local_port=${DB_PORT_INPUT:-$local_port}
-        fi
-        if check_mysql_running "$DB_HOST" "$local_port"; then
-            echo "MySQL/MariaDB is running on $DB_HOST:$local_port."
-        else
-            echo "MySQL/MariaDB is not running on $DB_HOST."
-            if check_docker; then
-                if [ "$AUTO" = true ]; then
-                    echo "Use --docker flag to start MySQL via Docker."
-                    echo "Or start MySQL manually and re-run this script."
-                    exit 1
-                fi
-                read -rp "Start MySQL via Docker? [Y/n] " START_DOCKER < /dev/tty
-                START_DOCKER=${START_DOCKER:-Y}
-                if [[ "$START_DOCKER" =~ ^[Yy] ]]; then
-                    MYSQL_METHOD="docker"
-                else
-                    echo
-                    echo "Please start MySQL/MariaDB and re-run this script."
-                    echo "  Ubuntu/Debian: sudo systemctl start mysql"
-                    echo "  macOS:         brew services start mysql"
-                    echo "  Arch/Fedora:   sudo systemctl start mariadb"
-                    exit 1
-                fi
-            else
-                echo
-                echo "Docker is not available either. Please install MySQL/MariaDB or Docker:"
-                echo "  MySQL:   https://dev.mysql.com/downloads/"
-                echo "  MariaDB: https://mariadb.org/download/"
-                echo "  Docker:  https://docs.docker.com/get-docker/"
-                exit 1
-            fi
-        fi
-        ;;
-
-    remote)
-        if [ -z "$DB_HOST" ]; then
-            read -rp "MySQL host: " DB_HOST < /dev/tty
-        fi
-        if [ -z "$DB_HOST" ]; then
-            echo "Error: No host provided."
-            exit 1
-        fi
-        local_port="3306"
-        if [ "$AUTO" = false ]; then
-            read -rp "MySQL port [$local_port]: " DB_PORT_INPUT < /dev/tty
-            local_port=${DB_PORT_INPUT:-$local_port}
-        fi
-        echo "Will connect to MySQL at $DB_HOST:$local_port"
-        ;;
-
-    docker)
-        if ! check_docker; then
-            echo "Error: Docker is not installed or docker compose is not available."
-            echo "Install Docker: https://docs.docker.com/get-docker/"
-            exit 1
-        fi
-        ;;
-esac
-
-echo
-
 # ─── Step 3: Execute the chosen path ────────────────────────────────
 
-if [ "$MYSQL_METHOD" = "docker" ]; then
+if [ "$BACKEND" = "sqlite" ]; then
+    # SQLite path: zero config, just run setup + migrations
+    echo "Setting up SQLite backend..."
+    kanban-setup --auto --backend sqlite
+    print_next_steps "sqlite"
+
+elif [ "$MYSQL_METHOD" = "docker" ]; then
     # Docker path: download files, start compose, use compose defaults
     DB_NAME="${KANBAN_DB_NAME:-kanban}"
     DB_USER="${KANBAN_DB_USER:-kanban}"
@@ -697,7 +744,7 @@ if [ "$MYSQL_METHOD" = "docker" ]; then
 
     # Write .env and print instructions
     write_env "$DB_HOST" "$DB_USER" "$DB_PASSWORD" "$DB_NAME" "$local_port"
-    print_next_steps "$DB_HOST" "$DB_USER" "$DB_PASSWORD" "$DB_NAME" true
+    print_next_steps "mysql" "$DB_HOST" "$DB_USER" "$DB_PASSWORD" "$DB_NAME" true
 
     echo "Docker compose files: $CONFIG_DIR/docker/"
     echo "Manage with: docker compose -f $CONFIG_DIR/docker/docker-compose.yml [up|down|logs]"
@@ -724,7 +771,8 @@ else
         read -rp "Database user [kanban]: " DB_USER < /dev/tty
         DB_USER=${DB_USER:-kanban}
 
-        read -rp "Database password (leave blank to auto-generate): " DB_PASSWORD < /dev/tty
+        read -rsp "Database password (leave blank to auto-generate): " DB_PASSWORD < /dev/tty
+        echo
         if [ -z "$DB_PASSWORD" ]; then
             DB_PASSWORD=$($PYTHON -c "import secrets; print(secrets.token_urlsafe(16))" 2>/dev/null || openssl rand -base64 16)
             echo "Generated password: $DB_PASSWORD"
@@ -763,11 +811,6 @@ else
 
     run_db_setup "$DB_HOST" "$DB_NAME" "$DB_USER" "$DB_PASSWORD" "${local_port:-3306}"
 
-    # Install semantic dependencies if requested
-    if [ "$WITH_SEMANTIC" = true ]; then
-        echo
-        echo "--- Installing semantic search dependencies ---"
-        pip install "kanban-mcp[semantic]"
-        echo "Semantic search dependencies installed."
-    fi
+    write_env "$DB_HOST" "$DB_USER" "$DB_PASSWORD" "$DB_NAME" "${local_port:-3306}"
+    print_next_steps "mysql" "$DB_HOST" "$DB_USER" "$DB_PASSWORD" "$DB_NAME"
 fi
