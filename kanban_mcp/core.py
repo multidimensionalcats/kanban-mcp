@@ -2453,7 +2453,13 @@ class KanbanMCPServer:
 
         # Auto-apply pending migrations
         from kanban_mcp.setup import auto_migrate
-        auto_migrate(self.db._backend)
+        try:
+            auto_migrate(self.db._backend)
+        except Exception as e:
+            logger.error("Migration failed: %s", e)
+            logger.error(
+                "The server will start but some features may not work. "
+                "Fix the issue above and restart.")
 
         # Current project state
         self.current_project_id = None
