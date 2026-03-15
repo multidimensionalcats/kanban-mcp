@@ -11,5 +11,4 @@ kanban_mcp.egg-info/
 build/
 dist/
 node_modules/
-HANDOVER.md
 plan-*.md

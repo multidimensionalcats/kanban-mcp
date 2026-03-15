@@ -18,8 +18,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-import mysql.connector
-from mysql.connector import Error as MySQLError
+try:
+    import mysql.connector
+    from mysql.connector import Error as MySQLError
+    _HAS_MYSQL = True
+except ImportError:
+    _HAS_MYSQL = False
+    MySQLError = Exception  # fallback for type references
 
 # Migrations numbered <= this are backfilled for pre-versioning installs
 _BACKFILL_CUTOFF = 4
@@ -28,7 +33,16 @@ _BACKFILL_CUTOFF = 4
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="kanban-setup",
-        description="Set up the MySQL/MariaDB database for kanban-mcp",
+        description="Set up the database for kanban-mcp",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["mysql", "sqlite"],
+        default=None,
+        help=(
+            "Database backend to use. Auto-detected if not set"
+            " (MySQL if KANBAN_DB_* env vars present, else SQLite)."
+        ),
     )
     parser.add_argument(
         "--auto",
@@ -75,6 +89,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--sqlite-path",
+        default=None,
+        help="SQLite database file path (default: XDG data dir)",
+    )
+    parser.add_argument(
         "--uninstall",
         action="store_true",
         help="Show uninstall instructions",
@@ -87,22 +106,34 @@ def generate_password() -> str:
     return secrets.token_urlsafe(16)
 
 
-def find_migrations_dir() -> str | None:
-    """Find the migrations directory.
+def find_migrations_dir(backend_type: str = "mysql") -> str | None:
+    """Find the migrations directory for the given backend.
 
     Checks two locations:
-    1. Local repo: ./kanban_mcp/migrations (when run from repo root)
-    2. Package install: alongside this file at kanban_mcp/migrations
+    1. Local repo: ./kanban_mcp/migrations/{backend_type}
+    2. Package install: alongside this file at
+       kanban_mcp/migrations/{backend_type}
+
+    Falls back to the flat migrations/ directory for backwards compatibility.
     """
-    # Local repo check
-    local = Path.cwd() / "kanban_mcp" / "migrations"
+    # Local repo check — new structure
+    local = Path.cwd() / "kanban_mcp" / "migrations" / backend_type
     if local.is_dir() and list(local.glob("0*.sql")):
         return str(local)
 
-    # Package install check
-    package = Path(__file__).parent / "migrations"
+    # Package install check — new structure
+    package = Path(__file__).parent / "migrations" / backend_type
     if package.is_dir() and list(package.glob("0*.sql")):
         return str(package)
+
+    # Fallback: flat migrations/ directory (backwards compat)
+    local_flat = Path.cwd() / "kanban_mcp" / "migrations"
+    if local_flat.is_dir() and list(local_flat.glob("0*.sql")):
+        return str(local_flat)
+
+    package_flat = Path(__file__).parent / "migrations"
+    if package_flat.is_dir() and list(package_flat.glob("0*.sql")):
+        return str(package_flat)
 
     return None
 
@@ -467,19 +498,72 @@ def _split_sql(sql: str) -> list[str]:
         cleaned_lines.append("".join(out))
     cleaned = "\n".join(cleaned_lines)
 
-    # 2. Split on semicolons
-    return [s.strip() for s in cleaned.split(";") if s.strip()]
+    # 2. Split on semicolons, respecting BEGIN...END blocks
+    #    (needed for SQLite triggers: CREATE TRIGGER ... BEGIN ... END;)
+    # BEGIN TRANSACTION / BEGIN IMMEDIATE / BEGIN DEFERRED / BEGIN EXCLUSIVE
+    # are not trigger bodies — don't count them.
+    _BEGIN_TRANSACTION_WORDS = {
+        'TRANSACTION', 'IMMEDIATE', 'DEFERRED', 'EXCLUSIVE'}
+    statements: list[str] = []
+    current: list[str] = []
+    in_begin_block = 0
+    for part in cleaned.split(";"):
+        stripped = part.strip()
+        # Track BEGIN/END nesting
+        upper = stripped.upper()
+        # Count BEGIN keywords (but not BEGIN TRANSACTION etc.)
+        tokens = upper.split()
+        for i_tok, token in enumerate(tokens):
+            if token == 'BEGIN':  # nosec B105
+                nxt = i_tok + 1
+                next_tok = (tokens[nxt]
+                            if nxt < len(tokens)
+                            else None)
+                if next_tok not in _BEGIN_TRANSACTION_WORDS:
+                    in_begin_block += 1
+        current.append(part)
+        if in_begin_block > 0:
+            for token in upper.split():
+                if token == 'END':  # nosec B105
+                    in_begin_block -= 1
+            if in_begin_block <= 0:
+                in_begin_block = 0
+                joined = ";".join(current).strip()
+                if joined:
+                    statements.append(joined)
+                current = []
+        else:
+            joined = ";".join(current).strip()
+            if joined:
+                statements.append(joined)
+            current = []
+    # Handle any remaining
+    if current:
+        joined = ";".join(current).strip()
+        if joined:
+            statements.append(joined)
+    return statements
 
 
-def _ensure_schema_migrations_table(cursor) -> None:
+def _ensure_schema_migrations_table(
+    cursor, backend_type: str = 'mysql',
+) -> None:
     """Create the schema_migrations tracking table if needed."""
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS schema_migrations (
-            filename VARCHAR(255) PRIMARY KEY,
-            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-          COLLATE=utf8mb4_unicode_ci
-    """)
+    if backend_type == 'sqlite':
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                filename TEXT PRIMARY KEY,
+                applied_at TEXT DEFAULT (datetime('now'))
+            )
+        """)
+    else:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                filename VARCHAR(255) PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+              COLLATE=utf8mb4_unicode_ci
+        """)
 
 
 def _get_applied_migrations(cursor) -> set[str]:
@@ -490,11 +574,16 @@ def _get_applied_migrations(cursor) -> set[str]:
 
 def _backfill_existing_install(
     cursor, migration_files: list[Path],
+    backend_type: str = 'mysql',
 ) -> bool:
     """Detect pre-versioning installs and backfill records.
 
     Returns True if backfill was performed.
+    Only applies to MySQL — SQLite installs are always fresh.
     """
+    if backend_type == 'sqlite':
+        return False
+
     # Check if items table exists (sign of existing install)
     cursor.execute(
         "SELECT TABLE_NAME FROM information_schema.TABLES "
@@ -532,8 +621,107 @@ def _backfill_existing_install(
     return True
 
 
+def _run_migrations_with_backend(backend) -> None:
+    """Run migrations using a DatabaseBackend instance (CLI mode)."""
+    bt = backend.backend_type
+    migrations_dir = find_migrations_dir(bt)
+    if migrations_dir is None:
+        print("Error: Could not find migration files.")
+        print(
+            "Run this from the kanban-mcp repo root,"
+            " or ensure kanban-mcp is pip-installed."
+        )
+        sys.exit(1)
+
+    migration_files = sorted(Path(migrations_dir).glob("0*.sql"))
+    if not migration_files:
+        print("Error: Could not find migration files.")
+        sys.exit(1)
+
+    print(
+        f"Found {len(migration_files)} migration(s)"
+        f" in: {migration_files[0].parent}"
+    )
+
+    try:
+        with backend.db_cursor(commit=True) as cursor:
+            _ensure_schema_migrations_table(cursor, bt)
+
+        with backend.db_cursor(commit=True) as cursor:
+            _backfill_existing_install(
+                cursor, migration_files, bt)
+
+        with backend.db_cursor() as cursor:
+            applied = _get_applied_migrations(cursor)
+    except Exception as e:
+        print(f"Error setting up migrations: {e}")
+        sys.exit(1)
+
+    applied_count = 0
+    skipped_count = 0
+    for mfile in migration_files:
+        if mfile.name in applied:
+            print(f"  Already applied: {mfile.name}")
+            skipped_count += 1
+            continue
+
+        print(f"  Applying {mfile.name}...")
+        sql = mfile.read_text()
+        try:
+            with backend.db_cursor(commit=True) as cursor:
+                for stmt in _split_sql(sql):
+                    try:
+                        cursor.execute(stmt)
+                        try:
+                            cursor.fetchall()
+                        except Exception:  # nosec B110
+                            pass
+                    except Exception as stmt_err:
+                        is_mysql_1146 = (
+                            hasattr(stmt_err, 'errno')
+                            and stmt_err.errno == 1146)
+                        is_sqlite_no_table = (
+                            'no such table' in str(stmt_err))
+                        if is_mysql_1146 or is_sqlite_no_table:
+                            print(
+                                f"    Skipped (table absent):"
+                                f" {stmt_err}")
+                            continue
+                        raise
+                cursor.execute(
+                    "INSERT INTO schema_migrations"
+                    f" (filename) VALUES"
+                    f" ({backend.placeholder})",  # nosec B608
+                    (mfile.name,),
+                )
+            applied_count += 1
+        except Exception as e:
+            print(f"  ERROR applying {mfile.name}: {e}")
+            print(
+                "  Aborting migrations."
+                " Fix the issue and re-run."
+            )
+            sys.exit(1)
+
+    print(
+        f"Migrations complete."
+        f" Applied: {applied_count},"
+        f" already up-to-date: {skipped_count}."
+    )
+
+
 def _run_migrations(config: dict) -> None:
-    """Connect as kanban user and run migrations with tracking."""
+    """Connect as kanban user and run migrations with tracking.
+
+    Legacy MySQL-only path for backward compat.
+    """
+    if not _HAS_MYSQL:
+        print(
+            "Error: mysql-connector-python not installed."
+            " Install with: pip install kanban-mcp[mysql]"
+        )
+        sys.exit(1)
+
     migration_files = get_migration_files()
     if not migration_files:
         print("Error: Could not find migration files.")
@@ -647,16 +835,123 @@ def _run_migrations(config: dict) -> None:
     )
 
 
-def auto_migrate(db_config: dict) -> None:
+def auto_migrate(backend_or_config) -> None:
     """Run pending migrations at server startup.
 
+    Accepts either a DatabaseBackend instance or a legacy config dict.
+    When given a dict, connects via MySQL (backward compatible).
+
     Unlike _run_migrations(), this function:
-    - Takes a KanbanDB.config-shaped dict (host/user/password/database)
     - Logs instead of printing
     - Never calls sys.exit — errors are logged and swallowed
     - Is safe to call on every server start
     """
+    from kanban_mcp.db.base import DatabaseBackend
+
     log = logging.getLogger("kanban-mcp.migrate")
+
+    # Duck-type check: backend instance vs legacy config dict
+    if isinstance(backend_or_config, DatabaseBackend):
+        _auto_migrate_backend(backend_or_config, log)
+    elif isinstance(backend_or_config, dict):
+        import warnings
+        warnings.warn(
+            "Passing a config dict to auto_migrate() is deprecated."
+            " Pass a DatabaseBackend instance instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        _auto_migrate_mysql_legacy(backend_or_config, log)
+    else:
+        log.error(
+            "auto_migrate: expected DatabaseBackend or dict,"
+            " got %s", type(backend_or_config).__name__,
+        )
+
+
+def _auto_migrate_backend(backend, log) -> None:
+    """Run migrations using a DatabaseBackend instance."""
+    bt = backend.backend_type
+    migrations_dir = find_migrations_dir(bt)
+    if migrations_dir is None:
+        log.debug("No migration files found for %s, skipping.", bt)
+        return
+
+    migration_files = sorted(Path(migrations_dir).glob("0*.sql"))
+    if not migration_files:
+        log.debug("No migration files found, skipping.")
+        return
+
+    try:
+        with backend.db_cursor(commit=True) as cursor:
+            _ensure_schema_migrations_table(cursor, bt)
+
+        with backend.db_cursor(commit=True) as cursor:
+            _backfill_existing_install(cursor, migration_files, bt)
+
+        with backend.db_cursor() as cursor:
+            applied = _get_applied_migrations(cursor)
+
+        for mfile in migration_files:
+            if mfile.name in applied:
+                continue
+
+            log.info("Applying migration: %s", mfile.name)
+            sql = mfile.read_text()
+            try:
+                with backend.db_cursor(commit=True) as cursor:
+                    skipped = False
+                    for stmt in _split_sql(sql):
+                        try:
+                            cursor.execute(stmt)
+                            try:
+                                cursor.fetchall()
+                            except Exception:  # nosec B110
+                                pass
+                        except Exception as stmt_err:
+                            # Skip "table absent" errors on both backends
+                            is_mysql_1146 = (
+                                hasattr(stmt_err, 'errno')
+                                and stmt_err.errno == 1146)
+                            is_sqlite_no_table = (
+                                'no such table' in str(stmt_err))
+                            if is_mysql_1146 or is_sqlite_no_table:
+                                log.info(
+                                    "  Skipped (table absent):"
+                                    " %s", stmt_err,
+                                )
+                                skipped = True
+                                continue
+                            raise
+                    if skipped:
+                        log.warning(
+                            "Migration %s had skipped statements"
+                            " — marking as applied but review"
+                            " may be needed.", mfile.name,
+                        )
+                    cursor.execute(
+                        "INSERT INTO schema_migrations"
+                        f" (filename) VALUES"
+                        f" ({backend.placeholder})",  # nosec B608
+                        (mfile.name,),
+                    )
+            except Exception as e:
+                log.error(
+                    "Migration %s failed: %s",
+                    mfile.name, e,
+                )
+                raise
+    except Exception as e:
+        log.error("Auto-migrate error: %s", e)
+        raise
+
+
+def _auto_migrate_mysql_legacy(db_config: dict, log) -> None:
+    """Legacy auto_migrate path for MySQL config dicts."""
+    if not _HAS_MYSQL:
+        log.error(
+            "Auto-migrate: mysql-connector-python not installed.")
+        return
 
     migration_files = get_migration_files()
     if not migration_files:
@@ -714,13 +1009,49 @@ def auto_migrate(db_config: dict) -> None:
                     "Migration %s failed: %s",
                     mfile.name, e,
                 )
-                break
+                raise
 
         cursor.close()
     except MySQLError as e:
         log.error("Auto-migrate error: %s", e)
+        raise
     finally:
         conn.close()
+
+
+def _detect_backend() -> str:
+    """Auto-detect backend: MySQL if creds present, else SQLite."""
+    explicit = os.environ.get('KANBAN_BACKEND')
+    if explicit:
+        return explicit
+    if (os.environ.get('KANBAN_DB_USER')
+            and os.environ.get('KANBAN_DB_PASSWORD')
+            and os.environ.get('KANBAN_DB_NAME')):
+        return 'mysql'
+    return 'sqlite'
+
+
+def write_sqlite_env_file(path: str, sqlite_path: str = None) -> None:
+    """Write a .env file with SQLite configuration."""
+    content = (
+        "# kanban-mcp database configuration\n"
+        "KANBAN_BACKEND=sqlite\n"
+    )
+    if sqlite_path:
+        content += f"KANBAN_SQLITE_PATH={sqlite_path}\n"
+    Path(path).write_text(content)
+
+
+def mcp_config_sqlite_json() -> str:
+    """Return MCP config JSON for SQLite backend."""
+    config = {
+        "mcpServers": {
+            "kanban": {
+                "command": "kanban-mcp",
+            }
+        }
+    }
+    return json.dumps(config, indent=2)
 
 
 def _handle_env_file(config: dict, auto: bool) -> None:
@@ -799,8 +1130,24 @@ def main() -> None:
         )
         return
 
+    # Detect backend
+    backend_type = args.backend or _detect_backend()
     print("=== kanban-mcp Database Setup ===")
+    print(f"Backend: {backend_type}")
     print()
+
+    if backend_type == 'sqlite':
+        _setup_sqlite(args)
+        return
+
+    # MySQL setup path
+    if not _HAS_MYSQL:
+        print(
+            "Error: mysql-connector-python not installed."
+            "\n  Install with: pip install kanban-mcp[mysql]"
+            "\n  Or use SQLite: kanban-setup --backend sqlite"
+        )
+        sys.exit(1)
 
     # Gather config
     if args.auto:
@@ -893,6 +1240,77 @@ def main() -> None:
     print()
 
 
+def _setup_sqlite(args) -> None:
+    """Set up SQLite backend — zero config, just run migrations."""
+    from kanban_mcp.db.sqlite_backend import SQLiteBackend
+
+    # Determine path
+    sqlite_path = getattr(args, 'sqlite_path', None)
+    if sqlite_path:
+        backend = SQLiteBackend(db_path=sqlite_path)
+    else:
+        backend = SQLiteBackend()
+
+    db_path = backend._db_path
+    print(f"  Database: {db_path}")
+    print()
+
+    if not args.auto:
+        confirm = _prompt("Proceed? [Y/n]", "Y")
+        if not confirm.lower().startswith("y"):
+            print("Aborted.")
+            return
+
+    # Run migrations
+    print("--- Running migrations ---")
+    _run_migrations_with_backend(backend)
+
+    # Install semantic if requested
+    if args.with_semantic:
+        print()
+        print("--- Installing semantic search dependencies ---")
+        _install_semantic()
+
+    # Write .env
+    from kanban_mcp.core import get_config_dir
+    config_dir = get_config_dir()
+    config_dir.mkdir(parents=True, exist_ok=True)
+    env_path = str(config_dir / ".env")
+
+    write = True
+    if os.path.exists(env_path) and not args.auto:
+        overwrite = _prompt(
+            f"{env_path} already exists. Overwrite? [y/N]", "N")
+        if not overwrite.lower().startswith("y"):
+            print("Skipping .env generation.")
+            write = False
+
+    if write:
+        write_sqlite_env_file(env_path, sqlite_path)
+        print(f"Created {env_path}")
+
+    print()
+    print("=== Setup complete ===")
+    print()
+    print("Next steps:")
+    print()
+    print("1. Add kanban-mcp to your MCP client config:")
+    print()
+    print(mcp_config_sqlite_json())
+    print()
+    print("   Add to the config file for your tool:")
+    print()
+    _print_tool_table()
+    print()
+    print("2. Start the web UI (optional):")
+    print("   kanban-web")
+    print("   Open http://localhost:5000")
+    print()
+    print("3. Verify installation:")
+    print("   kanban-cli --project /path/to/project summary")
+    print()
+
+
 def _print_tool_table() -> None:
     """Print the MCP client tool/config reference table."""
     rows = [
@@ -911,7 +1329,7 @@ def _print_tool_table() -> None:
          "mcpServers"),
     ]
     hdr = f"   {'Tool':<20}{'Config file':<45}{'Key'}"
-    sep = f"   {'────':<20}{'───────────':<45}{'───'}"
+    sep = f"   {'----':<20}{'-----------':<45}{'---'}"
     print(hdr)
     print(sep)
     for tool, cfg, key in rows:

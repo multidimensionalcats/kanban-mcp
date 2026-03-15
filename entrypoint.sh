@@ -34,4 +34,4 @@ auto_migrate({
 })
 "
 
-exec gunicorn -b 0.0.0.0:5000 kanban_mcp.web:app
+exec gunicorn -b 0.0.0.0:5000 --worker-class gthread --threads 4 --preload kanban_mcp.web:app

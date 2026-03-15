@@ -9,16 +9,19 @@ import unittest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import kanban_mcp.db
+
 
 def cleanup_test_project(db, project_path):
     """Clean up all test data for a project including the project itself."""
     project_id = db.hash_project_path(project_path)
     pid = project_id
-    sub = "(SELECT id FROM items WHERE project_id = %s)"
+    ph = db._backend.placeholder
+    sub = f"(SELECT id FROM items WHERE project_id = {ph})"
     with db._db_cursor(commit=True) as cursor:
         cursor.execute(
             "DELETE FROM update_items WHERE update_id IN "
-            "(SELECT id FROM updates WHERE project_id = %s)",
+            f"(SELECT id FROM updates WHERE project_id = {ph})",
             (pid,))
         cursor.execute(
             "DELETE FROM embeddings WHERE source_type = 'item'"
@@ -32,9 +35,9 @@ def cleanup_test_project(db, project_path):
             "DELETE FROM embeddings WHERE source_type = "
             "'update' AND source_id IN "
             "(SELECT id FROM updates WHERE "
-            "project_id = %s)", (pid,))
+            f"project_id = {ph})", (pid,))
         cursor.execute(
-            "DELETE FROM updates WHERE project_id = %s",
+            f"DELETE FROM updates WHERE project_id = {ph}",
             (pid,))
         cursor.execute(
             "DELETE FROM item_tags WHERE item_id IN "
@@ -54,12 +57,12 @@ def cleanup_test_project(db, project_path):
             + " OR target_item_id IN " + sub,
             (pid, pid))
         cursor.execute(
-            "DELETE FROM items WHERE project_id = %s",
+            f"DELETE FROM items WHERE project_id = {ph}",
             (pid,))
         cursor.execute(
-            "DELETE FROM tags WHERE project_id = %s",
+            f"DELETE FROM tags WHERE project_id = {ph}",
             (pid,))
-        cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+        cursor.execute(f"DELETE FROM projects WHERE id = {ph}", (project_id,))
 
 
 class TestKanbanDB(unittest.TestCase):
@@ -69,7 +72,9 @@ class TestKanbanDB(unittest.TestCase):
     def setUpClass(cls):
         """Set up test database connection."""
         from kanban_mcp.core import KanbanDB
+        from kanban_mcp.setup import auto_migrate
         cls.db = KanbanDB()
+        auto_migrate(cls.db._backend)
         # Use a test project path
         cls.test_project_path = "/tmp/test-kanban-project"
         cls.test_project_id = cls.db.hash_project_path(cls.test_project_path)
@@ -632,7 +637,9 @@ class TestConnectionPooling(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from kanban_mcp.core import KanbanDB
+        from kanban_mcp.setup import auto_migrate
         cls.db = KanbanDB()
+        auto_migrate(cls.db._backend)
         cls.test_project_path = "/tmp/test-pool"
 
     def setUp(self):
@@ -641,16 +648,19 @@ class TestConnectionPooling(unittest.TestCase):
     def tearDown(self):
         cleanup_test_project(self.db, self.test_project_path)
 
-    def test_db_has_pool(self):
-        """KanbanDB should have a connection pool."""
-        self.assertTrue(hasattr(self.db, '_pool'))
-        self.assertIsNotNone(self.db._pool)
+    def test_db_has_backend(self):
+        """KanbanDB should have a database backend."""
+        self.assertTrue(hasattr(self.db, '_backend'))
+        self.assertIsNotNone(self.db._backend)
+        self.assertIn(self.db._backend.backend_type, ('mysql', 'sqlite'))
 
+    @unittest.skipIf(
+        os.environ.get('KANBAN_BACKEND') == 'sqlite',
+        "MySQL-specific pool test")
     def test_get_connection_returns_pooled_connection(self):
-        """_get_connection should return connection from pool."""
-        conn = self.db._get_connection()
+        """Backend pool should return working connections."""
+        conn = self.db._backend._get_connection()
         self.assertIsNotNone(conn)
-        # Pooled connections have pool_config attribute
         self.assertTrue(
             hasattr(conn, '_pool_config_version')
             or conn.is_connected())
@@ -674,12 +684,14 @@ class TestConnectionPooling(unittest.TestCase):
                 self.test_project_path))
         self.assertEqual(len(items), 10)
 
+    @unittest.skipIf(
+        os.environ.get('KANBAN_BACKEND') == 'sqlite',
+        "MySQL-specific pool test")
     def test_pool_size_configurable(self):
         """Pool size should be configurable at init."""
         from kanban_mcp.core import KanbanDB
         db = KanbanDB(pool_size=3)
-        self.assertEqual(db._pool.pool_size, 3)
-        # Pool auto-manages connections, no explicit close needed
+        self.assertEqual(db._backend._pool.pool_size, 3)
 
     def test_concurrent_connections_within_pool_limit(self):
         """Should handle concurrent operations within pool limit."""
@@ -705,52 +717,18 @@ class TestRelationships(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from kanban_mcp.core import KanbanDB
+        from kanban_mcp.setup import auto_migrate
         cls.db = KanbanDB()
+        auto_migrate(cls.db._backend)
         cls.project_id = cls.db.hash_project_path('/tmp/test_relationships')
         # Create project
-        conn = cls.db._get_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO projects "
-            "(id, name, directory_path) "
-            "VALUES (%s, %s, %s) "
-            "ON DUPLICATE KEY UPDATE "
-            "name = VALUES(name)",
-            (cls.project_id,
-             'test_relationships',
-             '/tmp/test_relationships'))
-        conn.commit()
-        cursor.close()
-        conn.close()
+        cls.db.ensure_project('/tmp/test_relationships',
+                              'test_relationships')
 
     @classmethod
     def tearDownClass(cls):
-        # Clean up relationships
-        conn = cls.db._get_connection()
-        cursor = conn.cursor()
-        sub = (
-            "(SELECT id FROM items "
-            "WHERE project_id = %s)")
-        cursor.execute(
-            "DELETE FROM item_relationships "
-            "WHERE source_item_id IN " + sub,
-            (cls.project_id,))
-        cursor.execute(
-            "DELETE FROM update_items "
-            "WHERE item_id IN " + sub,
-            (cls.project_id,))
-        cursor.execute(
-            "DELETE FROM updates "
-            "WHERE project_id = %s",
-            (cls.project_id,))
-        cursor.execute(
-            "DELETE FROM items "
-            "WHERE project_id = %s",
-            (cls.project_id,))
-        cursor.execute("DELETE FROM projects WHERE id = %s", (cls.project_id,))
-        conn.commit()
-        cursor.close()
-        conn.close()
+        cleanup_test_project(cls.db,
+                             '/tmp/test_relationships')
 
     def setUp(self):
         # Create fresh test items for each test
@@ -766,17 +744,15 @@ class TestRelationships(unittest.TestCase):
 
     def tearDown(self):
         # Clean up items and relationships
-        conn = self.db._get_connection()
-        cursor = conn.cursor()
+        ph = self.db._backend.placeholder
         ids = (self.blocker_id, self.blocked_id, self.other_id)
-        cursor.execute(
-            "DELETE FROM item_relationships "
-            "WHERE source_item_id IN (%s, %s, %s) "
-            "OR target_item_id IN (%s, %s, %s)",
-            ids + ids)
-        conn.commit()
-        cursor.close()
-        conn.close()
+        placeholders = f"({ph}, {ph}, {ph})"
+        with self.db._db_cursor(commit=True) as cursor:
+            cursor.execute(
+                "DELETE FROM item_relationships "
+                "WHERE source_item_id IN " + placeholders
+                + " OR target_item_id IN " + placeholders,
+                ids + ids)
         self.db.delete_item(self.blocker_id)
         self.db.delete_item(self.blocked_id)
         self.db.delete_item(self.other_id)
@@ -3185,18 +3161,14 @@ class TestFileLinks(unittest.TestCase):
         self.db.delete_item(self.item_id)
 
         # File links should be gone (verify via query)
-        conn = self.db._get_connection()
-        cursor = conn.cursor()
-        try:
+        ph = self.db._backend.placeholder
+        with self.db._db_cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) FROM item_files WHERE item_id = %s",
+                f"SELECT COUNT(*) FROM item_files WHERE item_id = {ph}",
                 (self.item_id,)
             )
             count = cursor.fetchone()[0]
             self.assertEqual(count, 0)
-        finally:
-            cursor.close()
-            conn.close()
 
 
 class TestFileLinksMCPTools(unittest.TestCase):
@@ -3683,18 +3655,14 @@ class TestDecisions(unittest.TestCase):
         self.db.delete_item(self.item_id)
 
         # Verify item and decisions are gone (check via direct query)
-        conn = self.db._get_connection()
-        cursor = conn.cursor()
-        try:
+        with self.db._db_cursor() as cursor:
             cursor.execute(
-                "SELECT COUNT(*) FROM "
-                "item_decisions WHERE item_id = %s",
+                self.db._sql(
+                    "SELECT COUNT(*) FROM "
+                    "item_decisions WHERE item_id = %s"),
                 (self.item_id,))
             count = cursor.fetchone()[0]
             self.assertEqual(count, 0)
-        finally:
-            cursor.close()
-            conn.close()
 
 
 class TestDecisionsMCPTools(unittest.TestCase):
@@ -3918,8 +3886,9 @@ class TestEmbeddings(unittest.TestCase):
 
         with self.db._db_cursor(commit=True) as cursor:
             cursor.execute(
-                "UPDATE items SET title = %s "
-                "WHERE id = %s",
+                self.db._sql(
+                    "UPDATE items SET title = %s "
+                    "WHERE id = %s"),
                 ("Completely Different Title "
                  "About Something Else",
                  self.item_id))
@@ -4155,16 +4124,21 @@ class TestEmbeddingsMCPTools(unittest.TestCase):
         self.assertIsNotNone(embedding)
 
 
+@unittest.skipUnless(
+    kanban_mcp.db._HAS_MYSQL,
+    "mysql-connector-python not installed")
 class TestCredentialHardening(unittest.TestCase):
     """Tests for #8219 — no hardcoded defaults for DB credentials."""
 
     def _clear_env(self):
-        """Remove all KANBAN_DB_ env vars."""
+        """Remove all KANBAN_DB_ env vars and force MySQL backend."""
         for key in (
             'KANBAN_DB_USER', 'KANBAN_DB_PASSWORD',
             'KANBAN_DB_NAME', 'KANBAN_DB_HOST',
         ):
             os.environ.pop(key, None)
+        # Force MySQL so auto-detect doesn't fall back to SQLite
+        os.environ['KANBAN_BACKEND'] = 'mysql'
 
     def setUp(self):
         # Save original env
@@ -4173,7 +4147,8 @@ class TestCredentialHardening(unittest.TestCase):
                 'KANBAN_DB_USER',
                 'KANBAN_DB_PASSWORD',
                 'KANBAN_DB_NAME',
-                'KANBAN_DB_HOST')}
+                'KANBAN_DB_HOST',
+                'KANBAN_BACKEND')}
 
     def tearDown(self):
         # Restore original env
@@ -4221,7 +4196,7 @@ class TestCredentialHardening(unittest.TestCase):
         self.assertIn('KANBAN_DB_PASSWORD', str(ctx.exception))
 
     @unittest.mock.patch(
-        'kanban_mcp.core.MySQLConnectionPool')
+        'kanban_mcp.db.mysql_backend.MySQLConnectionPool')
     def test_init_constructor_params_override_env(self, mock_pool):
         from kanban_mcp.core import KanbanDB
         self._clear_env()
@@ -4269,12 +4244,16 @@ class TestCascadeDelete(unittest.TestCase):
         self.db.create_item(project_id, 'todo', 'Item 3')
 
         with self.db._db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+            cursor.execute(
+                self.db._sql(
+                    "DELETE FROM projects WHERE id = %s"),
+                (project_id,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT COUNT(*) as cnt FROM items "
-                "WHERE project_id = %s",
+                self.db._sql(
+                    "SELECT COUNT(*) as cnt FROM items "
+                    "WHERE project_id = %s"),
                 (project_id,))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 
@@ -4284,13 +4263,17 @@ class TestCascadeDelete(unittest.TestCase):
         self.db.add_update(project_id, 'Test update', [item_id])
 
         with self.db._db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+            cursor.execute(
+                self.db._sql(
+                    "DELETE FROM projects WHERE id = %s"),
+                (project_id,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT COUNT(*) as cnt "
-                "FROM updates "
-                "WHERE project_id = %s",
+                self.db._sql(
+                    "SELECT COUNT(*) as cnt "
+                    "FROM updates "
+                    "WHERE project_id = %s"),
                 (project_id,))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 
@@ -4300,13 +4283,17 @@ class TestCascadeDelete(unittest.TestCase):
         update_id = self.db.add_update(project_id, 'Test update', [item_id])
 
         with self.db._db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+            cursor.execute(
+                self.db._sql(
+                    "DELETE FROM projects WHERE id = %s"),
+                (project_id,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT COUNT(*) as cnt "
-                "FROM update_items "
-                "WHERE update_id = %s",
+                self.db._sql(
+                    "SELECT COUNT(*) as cnt "
+                    "FROM update_items "
+                    "WHERE update_id = %s"),
                 (update_id,))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 
@@ -4317,12 +4304,16 @@ class TestCascadeDelete(unittest.TestCase):
         self.db.create_item(pid2, 'issue', 'Item in project 2')
 
         with self.db._db_cursor(commit=True) as cursor:
-            cursor.execute("DELETE FROM projects WHERE id = %s", (pid1,))
+            cursor.execute(
+                self.db._sql(
+                    "DELETE FROM projects WHERE id = %s"),
+                (pid1,))
 
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT COUNT(*) as cnt FROM items "
-                "WHERE project_id = %s", (pid2,))
+                self.db._sql(
+                    "SELECT COUNT(*) as cnt FROM items "
+                    "WHERE project_id = %s"), (pid2,))
             self.assertEqual(cursor.fetchone()['cnt'], 1)
 
 
@@ -4332,13 +4323,27 @@ class TestIndexExistence(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from kanban_mcp.core import KanbanDB
+        from kanban_mcp.setup import auto_migrate
         cls.db = KanbanDB()
+        auto_migrate(cls.db._backend)
 
     def _get_index_columns(self, table):
         """Get set of indexed column names for a table."""
         with self.db._db_cursor(dictionary=True) as cursor:
-            cursor.execute(f"SHOW INDEX FROM {table}")
-            return {row['Column_name'] for row in cursor.fetchall()}
+            if self.db._backend.backend_type == 'sqlite':
+                cursor.execute(
+                    f"PRAGMA index_list({table})")
+                cols = set()
+                for idx in cursor.fetchall():
+                    cursor.execute(
+                        f"PRAGMA index_info({idx['name']})")
+                    for info in cursor.fetchall():
+                        cols.add(info['name'])
+                return cols
+            else:
+                cursor.execute(f"SHOW INDEX FROM {table}")
+                return {row['Column_name']
+                        for row in cursor.fetchall()}
 
     def test_index_on_relationship_target_item_id(self):
         cols = self._get_index_columns('item_relationships')
@@ -4439,10 +4444,11 @@ class TestCleanupTestProject(unittest.TestCase):
 
         with self.db._db_cursor(dictionary=True) as cursor:
             cursor.execute(
-                "SELECT COUNT(*) as cnt "
-                "FROM item_relationships "
-                "WHERE source_item_id = %s "
-                "OR target_item_id = %s",
+                self.db._sql(
+                    "SELECT COUNT(*) as cnt "
+                    "FROM item_relationships "
+                    "WHERE source_item_id = %s "
+                    "OR target_item_id = %s"),
                 (item1, item2))
             self.assertEqual(cursor.fetchone()['cnt'], 0)
 
@@ -4593,6 +4599,9 @@ class TestCLIInputValidation(unittest.TestCase):
         self.assertIn("Error", result)
 
 
+@unittest.skipUnless(
+    kanban_mcp.db._HAS_MYSQL,
+    "mysql-connector-python not installed")
 class TestPathResolution(unittest.TestCase):
     """Test that project paths are resolved before hashing."""
 
@@ -4635,7 +4644,7 @@ class TestPathResolution(unittest.TestCase):
             from kanban_mcp.core import KanbanDB as RealDB
             # Use a real instance with mocked pool
             with patch(
-                'kanban_mcp.core.MySQLConnectionPool',
+                'kanban_mcp.db.mysql_backend.MySQLConnectionPool',
             ):
                 with patch.dict(os.environ, {
                     'KANBAN_DB_USER': 'test',
@@ -4669,7 +4678,7 @@ class TestPathResolution(unittest.TestCase):
         """ensure_project('.') should produce same ID as cwd."""
         from kanban_mcp.core import KanbanDB
         with patch(
-            'kanban_mcp.core.MySQLConnectionPool',
+            'kanban_mcp.db.mysql_backend.MySQLConnectionPool',
         ):
             with patch.dict(os.environ, {
                 'KANBAN_DB_USER': 'test',

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kanban-mcp"
-version = "0.1.12"
+version = "0.2.0"
 description = "Kanban board MCP server for Claude Code — track issues, features, and todos"
 readme = "README.md"
 license = "MIT"
@@ -22,7 +22,6 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 dependencies = [
-    "mysql-connector-python>=8.0.0",
     "pyyaml>=6.0",
     "flask>=2.0.0",
     "GitPython>=3.1.0",
@@ -32,11 +31,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mysql = [
+    "mysql-connector-python>=8.0.0",
+]
 semantic = [
     "numpy>=1.24.0",
     "onnxruntime>=1.16.0",
     "tokenizers>=0.15.0",
     "huggingface_hub>=0.19.0",
+]
+full = [
+    "kanban-mcp[mysql,semantic]",
 ]
 dev = [
     "pytest>=7.0.0",
@@ -63,7 +68,7 @@ kanban_mcp = [
     "templates/*.html",
     "static/*.js",
     "static/*.css",
-    "migrations/*.sql",
+    "migrations/**/*.sql",
     "hooks/*.py",
 ]
 

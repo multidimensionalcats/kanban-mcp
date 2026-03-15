@@ -733,10 +733,10 @@ class TestAutoMigrate(unittest.TestCase):
 
     @patch("kanban_mcp.setup.get_migration_files")
     @patch("kanban_mcp.setup.mysql.connector")
-    def test_does_not_crash_server_on_failure(
+    def test_migration_failure_propagates(
         self, mock_mysql, mock_get_files,
     ):
-        """auto_migrate should log errors, not sys.exit."""
+        """auto_migrate must propagate migration errors, not swallow them."""
         from kanban_mcp.setup import auto_migrate
         from mysql.connector import Error as RealMySQLError
 
@@ -768,8 +768,8 @@ class TestAutoMigrate(unittest.TestCase):
                 "password": "pw",
                 "database": "kanban",
             }
-            # Should NOT raise or sys.exit
-            auto_migrate(db_config)
+            with self.assertRaises(RealMySQLError):
+                auto_migrate(db_config)
 
     @patch("kanban_mcp.setup.get_migration_files")
     def test_no_migration_files_does_not_crash(
@@ -1498,7 +1498,7 @@ class TestLoggingBeforeAutoMigrate(unittest.TestCase):
 
     @patch("kanban_mcp.setup.auto_migrate")
     @patch(
-        "kanban_mcp.core.MySQLConnectionPool",
+        "kanban_mcp.db.mysql_backend.MySQLConnectionPool",
     )
     @patch.dict(os.environ, {
         "KANBAN_DB_USER": "test",
@@ -1619,7 +1619,7 @@ class TestEnvFilePort(unittest.TestCase):
 class TestKanbanDBPort(unittest.TestCase):
     """Test KanbanDB port handling."""
 
-    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch('kanban_mcp.db.mysql_backend.MySQLConnectionPool')
     @patch.dict(os.environ, {
         'KANBAN_DB_USER': 'test',
         'KANBAN_DB_PASSWORD': 'test',
@@ -1635,7 +1635,7 @@ class TestKanbanDBPort(unittest.TestCase):
             db = KanbanDB()
         self.assertEqual(db.config["port"], 3307)
 
-    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch('kanban_mcp.db.mysql_backend.MySQLConnectionPool')
     @patch.dict(os.environ, {
         'KANBAN_DB_USER': 'test',
         'KANBAN_DB_PASSWORD': 'test',
@@ -1648,7 +1648,7 @@ class TestKanbanDBPort(unittest.TestCase):
             db = KanbanDB()
         self.assertEqual(db.config["port"], 3306)
 
-    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch('kanban_mcp.db.mysql_backend.MySQLConnectionPool')
     @patch.dict(os.environ, {
         'KANBAN_DB_USER': 'test',
         'KANBAN_DB_PASSWORD': 'test',
@@ -1659,7 +1659,7 @@ class TestKanbanDBPort(unittest.TestCase):
         db = KanbanDB(port=3308)
         self.assertEqual(db.config["port"], 3308)
 
-    @patch('kanban_mcp.core.MySQLConnectionPool')
+    @patch('kanban_mcp.db.mysql_backend.MySQLConnectionPool')
     @patch.dict(os.environ, {
         'KANBAN_DB_USER': 'test',
         'KANBAN_DB_PASSWORD': 'test',
@@ -1745,6 +1745,149 @@ class TestWebPortEnvVar(unittest.TestCase):
                 ["--port", "9090"],
             )
             self.assertEqual(port, 9090)
+
+
+class TestGunicornConfig(unittest.TestCase):
+    """Test gunicorn configuration for hardened worker settings."""
+
+    def _get_gunicorn_options(self, host="127.0.0.1", port=5000):
+        """Capture options passed to KanbanGunicorn."""
+        captured = {}
+
+        def fake_base_init(self_inner):
+            # Capture options set by KanbanGunicorn.__init__
+            captured["options"] = getattr(self_inner, "options", {})
+
+        with patch(
+            "gunicorn.app.base.BaseApplication.__init__", fake_base_init
+        ), patch(
+            "gunicorn.app.base.BaseApplication.run", lambda self_inner: None
+        ):
+            from kanban_mcp.web import _run_with_gunicorn
+            _run_with_gunicorn(host, port)
+
+        return captured.get("options", {})
+
+    def test_gunicorn_uses_gthread_worker_class(self):
+        options = self._get_gunicorn_options()
+        self.assertEqual(options.get("worker_class"), "gthread")
+
+    def test_gunicorn_uses_threads(self):
+        options = self._get_gunicorn_options()
+        self.assertEqual(options.get("threads"), 4)
+
+    def test_gunicorn_uses_preload(self):
+        options = self._get_gunicorn_options()
+        self.assertTrue(options.get("preload_app"))
+
+    def test_gunicorn_single_worker(self):
+        options = self._get_gunicorn_options()
+        self.assertEqual(options.get("workers"), 1)
+
+    def test_gunicorn_binds_to_host_port(self):
+        options = self._get_gunicorn_options("0.0.0.0", 8080)
+        self.assertEqual(options.get("bind"), "0.0.0.0:8080")
+
+
+class TestGunicornConfigApplied(unittest.TestCase):
+    """Test that gunicorn config is actually applied to cfg object."""
+
+    def _make_gunicorn_app(self):
+        """Create a real KanbanGunicorn instance and return it."""
+        from gunicorn.app.base import BaseApplication
+        from kanban_mcp.web import app as flask_app
+
+        class KanbanGunicorn(BaseApplication):
+            def __init__(self, flask_app, options=None):
+                self.flask_app = flask_app
+                self.options = options or {}
+                super().__init__()
+
+            def load_config(self):
+                for key, value in self.options.items():
+                    self.cfg.set(key.lower(), value)
+
+            def load(self):
+                return self.flask_app
+
+        options = {
+            'bind': '127.0.0.1:5000',
+            'workers': 1,
+            'worker_class': 'gthread',
+            'threads': 4,
+            'preload_app': True,
+            'accesslog': '-',
+        }
+        return KanbanGunicorn(flask_app, options)
+
+    def test_load_config_sets_worker_class_on_cfg(self):
+        from gunicorn.workers.gthread import ThreadWorker
+        gapp = self._make_gunicorn_app()
+        self.assertEqual(gapp.cfg.worker_class, ThreadWorker)
+
+    def test_load_config_sets_threads_on_cfg(self):
+        gapp = self._make_gunicorn_app()
+        self.assertEqual(gapp.cfg.threads, 4)
+
+    def test_load_config_sets_preload_on_cfg(self):
+        gapp = self._make_gunicorn_app()
+        self.assertTrue(gapp.cfg.preload_app)
+
+
+class TestEntrypointGunicornConfig(unittest.TestCase):
+    """Test entrypoint.sh gunicorn flags match programmatic config."""
+
+    @classmethod
+    def setUpClass(cls):
+        entrypoint = Path(__file__).parent.parent / "entrypoint.sh"
+        cls.entrypoint_content = entrypoint.read_text()
+        # Find the gunicorn exec line
+        for line in cls.entrypoint_content.splitlines():
+            if line.strip().startswith("exec gunicorn"):
+                cls.gunicorn_line = line.strip()
+                break
+        else:
+            raise AssertionError("No 'exec gunicorn' line in entrypoint.sh")
+
+    def test_entrypoint_uses_gthread(self):
+        self.assertIn("--worker-class gthread", self.gunicorn_line)
+
+    def test_entrypoint_uses_threads(self):
+        self.assertIn("--threads 4", self.gunicorn_line)
+
+    def test_entrypoint_uses_preload(self):
+        self.assertIn("--preload", self.gunicorn_line)
+
+    def test_entrypoint_config_matches_programmatic(self):
+        """Verify entrypoint.sh and _run_with_gunicorn agree on settings."""
+        # Get programmatic options
+        captured = {}
+
+        def fake_base_init(self_inner):
+            captured["options"] = getattr(self_inner, "options", {})
+
+        with patch(
+            "gunicorn.app.base.BaseApplication.__init__", fake_base_init
+        ), patch(
+            "gunicorn.app.base.BaseApplication.run",
+            lambda self_inner: None,
+        ):
+            from kanban_mcp.web import _run_with_gunicorn
+            _run_with_gunicorn("0.0.0.0", 5000)
+
+        options = captured["options"]
+
+        # Entrypoint must match
+        self.assertIn(
+            f"--worker-class {options['worker_class']}",
+            self.gunicorn_line,
+        )
+        self.assertIn(
+            f"--threads {options['threads']}",
+            self.gunicorn_line,
+        )
+        if options.get("preload_app"):
+            self.assertIn("--preload", self.gunicorn_line)
 
 
 if __name__ == "__main__":

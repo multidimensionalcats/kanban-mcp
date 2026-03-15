@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.env
+.git/
+models/
+mockup.html
+dist/
+*.egg-info/
+.venv/
+build/
+node_modules/
