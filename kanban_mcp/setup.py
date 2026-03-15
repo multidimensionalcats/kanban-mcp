@@ -677,13 +677,15 @@ def _run_migrations_with_backend(backend) -> None:
                         except Exception:  # nosec B110
                             pass
                     except Exception as stmt_err:
-                        if (hasattr(stmt_err, 'errno')
-                                and stmt_err.errno == 1146):
-                            tbl = getattr(
-                                stmt_err, "msg", str(stmt_err))
+                        is_mysql_1146 = (
+                            hasattr(stmt_err, 'errno')
+                            and stmt_err.errno == 1146)
+                        is_sqlite_no_table = (
+                            'no such table' in str(stmt_err))
+                        if is_mysql_1146 or is_sqlite_no_table:
                             print(
                                 f"    Skipped (table absent):"
-                                f" {tbl}")
+                                f" {stmt_err}")
                             continue
                         raise
                 cursor.execute(
@@ -1287,10 +1289,7 @@ def _setup_sqlite(args) -> None:
             write = False
 
     if write:
-        custom_path = (
-            sqlite_path if sqlite_path
-            and sqlite_path != backend._db_path else None)
-        write_sqlite_env_file(env_path, custom_path)
+        write_sqlite_env_file(env_path, sqlite_path)
         print(f"Created {env_path}")
 
     print()

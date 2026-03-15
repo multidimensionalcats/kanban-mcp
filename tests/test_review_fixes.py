@@ -309,5 +309,71 @@ class TestAutoMigrateReraises(unittest.TestCase):
                     _auto_migrate_backend(backend, log)
 
 
+class TestWriteSqliteEnvFile(unittest.TestCase):
+    """write_sqlite_env_file must include KANBAN_SQLITE_PATH when given."""
+
+    def test_custom_path_written_to_env(self):
+        """A custom sqlite_path must appear in the .env file."""
+        from kanban_mcp.setup import write_sqlite_env_file
+        with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.env', delete=False) as f:
+            env_path = f.name
+        try:
+            write_sqlite_env_file(env_path, '/custom/kanban.db')
+            content = Path(env_path).read_text()
+            self.assertIn(
+                'KANBAN_SQLITE_PATH=/custom/kanban.db', content)
+        finally:
+            os.unlink(env_path)
+
+    def test_default_path_omits_sqlite_path(self):
+        """When no custom path, KANBAN_SQLITE_PATH should be absent."""
+        from kanban_mcp.setup import write_sqlite_env_file
+        with tempfile.NamedTemporaryFile(
+                mode='w', suffix='.env', delete=False) as f:
+            env_path = f.name
+        try:
+            write_sqlite_env_file(env_path, None)
+            content = Path(env_path).read_text()
+            self.assertNotIn('KANBAN_SQLITE_PATH', content)
+            self.assertIn('KANBAN_BACKEND=sqlite', content)
+        finally:
+            os.unlink(env_path)
+
+
+class TestCliMigrationSkipsNoSuchTable(unittest.TestCase):
+    """_run_migrations_with_backend must skip 'no such table' on SQLite."""
+
+    def test_sqlite_no_such_table_skipped_in_cli(self):
+        """CLI migration path should skip SQLite table-absent errors."""
+        from kanban_mcp.setup import _run_migrations_with_backend
+        backend = SQLiteBackend(db_path=':memory:')
+
+        # Bootstrap schema
+        from kanban_mcp.setup import auto_migrate
+        auto_migrate(backend)
+
+        # Create a migration that hits a non-existent table
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mig = Path(tmpdir) / '002_test.sql'
+            mig.write_text(
+                "CREATE TABLE IF NOT EXISTS cli_test (id INTEGER);\n"
+                "INSERT INTO nonexistent_cli_table VALUES (1);\n"
+                "INSERT INTO cli_test VALUES (42);\n"
+            )
+            with patch(
+                'kanban_mcp.setup.find_migrations_dir',
+                return_value=tmpdir,
+            ):
+                # Should not sys.exit — the table-absent error is skipped
+                _run_migrations_with_backend(backend)
+
+        # The valid statements should have been executed
+        with backend.db_cursor() as c:
+            c.execute("SELECT * FROM cli_test")
+            rows = c.fetchall()
+        self.assertEqual(len(rows), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
