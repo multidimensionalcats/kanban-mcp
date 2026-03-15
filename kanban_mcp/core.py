@@ -1909,7 +1909,7 @@ class KanbanDB:
             if existing:
                 cursor.execute(self._sql(f"""
                     UPDATE embeddings
-                    SET `vector` = %s,
+                    SET vector = %s,
                         content_hash = %s,
                         created_at = {self._backend.now_func}
                     WHERE id = %s
@@ -1922,7 +1922,7 @@ class KanbanDB:
                 cursor.execute(self._sql("""
                     INSERT INTO embeddings
                         (source_type, source_id,
-                         content_hash, model, `vector`)
+                         content_hash, model, vector)
                     VALUES (%s, %s, %s, %s, %s)
                 """), (
                     source_type, source_id, content_hash,
@@ -1950,7 +1950,7 @@ class KanbanDB:
         with self._db_cursor(dictionary=True) as cursor:
             cursor.execute(self._sql("""
                 SELECT id, source_type, source_id,
-                    content_hash, model, `vector`,
+                    content_hash, model, vector,
                     created_at
                 FROM embeddings
                 WHERE source_type = %s AND source_id = %s AND model = %s
@@ -2049,7 +2049,7 @@ class KanbanDB:
             for source_type in type_filter:
                 if source_type == 'item':
                     cursor.execute(self._sql("""
-                        SELECT e.id, e.source_type, e.source_id, e.`vector`,
+                        SELECT e.id, e.source_type, e.source_id, e.vector,
                                i.title, i.description,
                                it.name as type_name,
                                s.name as status_name
@@ -2079,7 +2079,7 @@ class KanbanDB:
 
                 elif source_type == 'decision':
                     cursor.execute(self._sql("""
-                        SELECT e.id, e.source_type, e.source_id, e.`vector`,
+                        SELECT e.id, e.source_type, e.source_id, e.vector,
                                d.choice, d.item_id
                         FROM embeddings e
                         JOIN item_decisions d ON e.source_id = d.id
@@ -2104,7 +2104,7 @@ class KanbanDB:
 
                 elif source_type == 'update':
                     cursor.execute(self._sql("""
-                        SELECT e.id, e.source_type, e.source_id, e.`vector`,
+                        SELECT e.id, e.source_type, e.source_id, e.vector,
                                u.content, u.created_at
                         FROM embeddings e
                         JOIN updates u ON e.source_id = u.id
@@ -2183,7 +2183,7 @@ class KanbanDB:
         with self._db_cursor(dictionary=True) as cursor:
             # Items
             cursor.execute(self._sql("""
-                SELECT e.source_type, e.source_id, e.`vector`, i.title
+                SELECT e.source_type, e.source_id, e.vector, i.title
                 FROM embeddings e
                 JOIN items i ON e.source_id = i.id AND e.source_type = 'item'
                 WHERE e.model = %s AND i.project_id = %s
@@ -2207,7 +2207,7 @@ class KanbanDB:
             # Decisions
             cursor.execute(self._sql("""
                 SELECT e.source_type, e.source_id,
-                    e.`vector`, d.choice
+                    e.vector, d.choice
                 FROM embeddings e
                 JOIN item_decisions d
                     ON e.source_id = d.id
@@ -2234,7 +2234,7 @@ class KanbanDB:
             # Updates
             cursor.execute(self._sql("""
                 SELECT e.source_type, e.source_id,
-                    e.`vector`, u.content
+                    e.vector, u.content
                 FROM embeddings e
                 JOIN updates u
                     ON e.source_id = u.id

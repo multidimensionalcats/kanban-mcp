@@ -500,6 +500,10 @@ def _split_sql(sql: str) -> list[str]:
 
     # 2. Split on semicolons, respecting BEGIN...END blocks
     #    (needed for SQLite triggers: CREATE TRIGGER ... BEGIN ... END;)
+    # BEGIN TRANSACTION / BEGIN IMMEDIATE / BEGIN DEFERRED / BEGIN EXCLUSIVE
+    # are not trigger bodies — don't count them.
+    _BEGIN_TRANSACTION_WORDS = {
+        'TRANSACTION', 'IMMEDIATE', 'DEFERRED', 'EXCLUSIVE'}
     statements: list[str] = []
     current: list[str] = []
     in_begin_block = 0
@@ -507,10 +511,16 @@ def _split_sql(sql: str) -> list[str]:
         stripped = part.strip()
         # Track BEGIN/END nesting
         upper = stripped.upper()
-        # Count BEGIN keywords (but not BEGINNER etc.)
-        for token in upper.split():
+        # Count BEGIN keywords (but not BEGIN TRANSACTION etc.)
+        tokens = upper.split()
+        for i_tok, token in enumerate(tokens):
             if token == 'BEGIN':  # nosec B105
-                in_begin_block += 1
+                nxt = i_tok + 1
+                next_tok = (tokens[nxt]
+                            if nxt < len(tokens)
+                            else None)
+                if next_tok not in _BEGIN_TRANSACTION_WORDS:
+                    in_begin_block += 1
         current.append(part)
         if in_begin_block > 0:
             for token in upper.split():
@@ -888,6 +898,7 @@ def _auto_migrate_backend(backend, log) -> None:
             sql = mfile.read_text()
             try:
                 with backend.db_cursor(commit=True) as cursor:
+                    skipped = False
                     for stmt in _split_sql(sql):
                         try:
                             cursor.execute(stmt)
@@ -896,15 +907,26 @@ def _auto_migrate_backend(backend, log) -> None:
                             except Exception:  # nosec B110
                                 pass
                         except Exception as stmt_err:
-                            # MySQL: skip 1146 (table absent)
-                            if (hasattr(stmt_err, 'errno')
-                                    and stmt_err.errno == 1146):
+                            # Skip "table absent" errors on both backends
+                            is_mysql_1146 = (
+                                hasattr(stmt_err, 'errno')
+                                and stmt_err.errno == 1146)
+                            is_sqlite_no_table = (
+                                'no such table' in str(stmt_err))
+                            if is_mysql_1146 or is_sqlite_no_table:
                                 log.info(
                                     "  Skipped (table absent):"
                                     " %s", stmt_err,
                                 )
+                                skipped = True
                                 continue
                             raise
+                    if skipped:
+                        log.warning(
+                            "Migration %s had skipped statements"
+                            " — marking as applied but review"
+                            " may be needed.", mfile.name,
+                        )
                     cursor.execute(
                         "INSERT INTO schema_migrations"
                         f" (filename) VALUES"
@@ -919,6 +941,7 @@ def _auto_migrate_backend(backend, log) -> None:
                 break
     except Exception as e:
         log.error("Auto-migrate error: %s", e)
+        raise
 
 
 def _auto_migrate_mysql_legacy(db_config: dict, log) -> None:

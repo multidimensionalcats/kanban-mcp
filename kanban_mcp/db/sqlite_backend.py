@@ -66,12 +66,8 @@ class SQLiteBackend(DatabaseBackend):
         """Context manager for database cursor.
 
         When dictionary=True, rows are returned as real dict objects.
+        Thread-safe: does not mutate shared connection state.
         """
-        if dictionary:
-            self._conn.row_factory = sqlite3.Row
-        else:
-            self._conn.row_factory = None
-
         cursor = self._conn.cursor()
         try:
             if dictionary:
@@ -92,7 +88,11 @@ class SQLiteBackend(DatabaseBackend):
         """LIKE-based search on items and updates."""
         items = []
         updates = []
-        like_pattern = f'%{query}%'
+        # Escape SQL LIKE wildcards in user input
+        escaped = (query.replace('\\', '\\\\')
+                   .replace('%', '\\%')
+                   .replace('_', '\\_'))
+        like_pattern = f'%{escaped}%'
 
         with self.db_cursor(dictionary=True) as cursor:
             # Search items — title matches score higher
@@ -100,14 +100,15 @@ class SQLiteBackend(DatabaseBackend):
                 SELECT i.id, i.title, i.description,
                        it.name as type_name, s.name as status_name,
                        CASE
-                           WHEN i.title LIKE ? THEN 2.0
+                           WHEN i.title LIKE ? ESCAPE '\\' THEN 2.0
                            ELSE 1.0
                        END as score
                 FROM items i
                 JOIN item_types it ON i.type_id = it.id
                 JOIN statuses s ON i.status_id = s.id
                 WHERE i.project_id = ?
-                  AND (i.title LIKE ? OR i.description LIKE ?)
+                  AND (i.title LIKE ? ESCAPE '\\'
+                       OR i.description LIKE ? ESCAPE '\\')
                 ORDER BY score DESC
                 LIMIT ?
             """, (like_pattern, project_id,
@@ -133,7 +134,7 @@ class SQLiteBackend(DatabaseBackend):
                 SELECT u.id, u.content, u.created_at
                 FROM updates u
                 WHERE u.project_id = ?
-                  AND u.content LIKE ?
+                  AND u.content LIKE ? ESCAPE '\\'
                 ORDER BY u.created_at DESC
                 LIMIT ?
             """, (project_id, like_pattern, limit))
@@ -185,10 +186,20 @@ class SQLiteBackend(DatabaseBackend):
 
 
 class _DictCursorWrapper:
-    """Wraps a sqlite3 Cursor to return real dicts from fetch methods."""
+    """Wraps a sqlite3 Cursor to return real dicts from fetch methods.
+
+    Converts tuples to dicts using cursor.description column names.
+    Does not rely on connection.row_factory, so it is thread-safe.
+    """
 
     def __init__(self, cursor):
         self._cursor = cursor
+
+    def _to_dict(self, row):
+        if row is None:
+            return None
+        cols = [d[0] for d in self._cursor.description]
+        return dict(zip(cols, row))
 
     def execute(self, *args, **kwargs):
         return self._cursor.execute(*args, **kwargs)
@@ -197,20 +208,19 @@ class _DictCursorWrapper:
         return self._cursor.executemany(*args, **kwargs)
 
     def fetchone(self):
-        row = self._cursor.fetchone()
-        if row is None:
-            return None
-        return dict(row)
+        return self._to_dict(self._cursor.fetchone())
 
     def fetchall(self):
-        return [dict(row) for row in self._cursor.fetchall()]
+        cols = [d[0] for d in self._cursor.description]
+        return [dict(zip(cols, row)) for row in self._cursor.fetchall()]
 
     def fetchmany(self, size=None):
         if size is None:
             rows = self._cursor.fetchmany()
         else:
             rows = self._cursor.fetchmany(size)
-        return [dict(row) for row in rows]
+        cols = [d[0] for d in self._cursor.description]
+        return [dict(zip(cols, row)) for row in rows]
 
     def close(self):
         self._cursor.close()
