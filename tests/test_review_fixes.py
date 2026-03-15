@@ -114,6 +114,20 @@ class TestThreadSafeDbCursor(unittest.TestCase):
             row = c.fetchone()
         self.assertIsNone(row)
 
+    def test_fetchall_after_dml_returns_empty(self):
+        """fetchall after INSERT must return [] not crash on None desc."""
+        with self.backend.db_cursor(dictionary=True, commit=True) as c:
+            c.execute("INSERT INTO t VALUES (3, 'charlie')")
+            rows = c.fetchall()
+        self.assertEqual(rows, [])
+
+    def test_fetchmany_after_dml_returns_empty(self):
+        """fetchmany after INSERT must return [] not crash on None desc."""
+        with self.backend.db_cursor(dictionary=True, commit=True) as c:
+            c.execute("INSERT INTO t VALUES (4, 'dave')")
+            rows = c.fetchmany(10)
+        self.assertEqual(rows, [])
+
 
 class TestLikeWildcardEscape(unittest.TestCase):
     """#8: search_fulltext must escape % and _ in user queries."""
@@ -307,6 +321,27 @@ class TestAutoMigrateReraises(unittest.TestCase):
             ):
                 with self.assertRaises(PermissionError):
                     _auto_migrate_backend(backend, log)
+
+
+class TestGracefulMigrationFailureAtStartup(unittest.TestCase):
+    """Server must not crash if auto_migrate raises at startup."""
+
+    def test_server_survives_migration_failure(self):
+        """KanbanMCPServer.__init__ catches migration errors gracefully."""
+        with patch(
+            'kanban_mcp.setup.auto_migrate',
+            side_effect=PermissionError("disk full"),
+        ):
+            # Should not raise — server logs error and continues
+            from kanban_mcp.core import KanbanMCPServer
+            try:
+                server = KanbanMCPServer()
+                # If we get here, the server started despite the error
+                self.assertIsNotNone(server)
+            except PermissionError:
+                self.fail(
+                    "KanbanMCPServer.__init__ did not catch "
+                    "migration PermissionError")
 
 
 class TestWriteSqliteEnvFile(unittest.TestCase):
