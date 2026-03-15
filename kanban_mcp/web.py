@@ -290,14 +290,14 @@ def api_list_items():
         return jsonify({'items': []})
 
     with db._db_cursor(dictionary=True) as cursor:
-        cursor.execute("""
+        cursor.execute(db._sql("""
             SELECT i.id, i.title, t.name as type, s.name as status
             FROM items i
             JOIN item_types t ON i.type_id = t.id
             JOIN statuses s ON i.status_id = s.id
             WHERE i.project_id = %s
             ORDER BY i.id DESC
-        """, (project_id,))
+        """), (project_id,))
         items = cursor.fetchall()
 
     return jsonify({'items': items})
@@ -329,7 +329,9 @@ def api_delete_project(project_id):
     """Delete a project and all its data."""
     with db._db_cursor(dictionary=True, commit=True) as cursor:
         # Check project exists
-        cursor.execute("SELECT id FROM projects WHERE id = %s", (project_id,))
+        cursor.execute(
+            db._sql("SELECT id FROM projects WHERE id = %s"),
+            (project_id,))
         if not cursor.fetchone():
             return jsonify({
                 'success': False,
@@ -337,11 +339,11 @@ def api_delete_project(project_id):
             }), 404
 
         # Clean up embeddings (no FK to projects, must delete manually)
-        cursor.execute("""
+        cursor.execute(db._sql("""
             DELETE FROM embeddings WHERE source_type = 'item'
             AND source_id IN (SELECT id FROM items WHERE project_id = %s)
-        """, (project_id,))
-        cursor.execute("""
+        """), (project_id,))
+        cursor.execute(db._sql("""
             DELETE FROM embeddings
             WHERE source_type = 'decision'
             AND source_id IN (
@@ -351,14 +353,16 @@ def api_delete_project(project_id):
                     WHERE project_id = %s
                 )
             )
-        """, (project_id,))
-        cursor.execute("""
+        """), (project_id,))
+        cursor.execute(db._sql("""
             DELETE FROM embeddings WHERE source_type = 'update'
             AND source_id IN (SELECT id FROM updates WHERE project_id = %s)
-        """, (project_id,))
+        """), (project_id,))
 
         # CASCADE handles items, updates, tags, relationships, etc.
-        cursor.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+        cursor.execute(
+            db._sql("DELETE FROM projects WHERE id = %s"),
+            (project_id,))
 
     return jsonify({'success': True})
 
@@ -708,7 +712,7 @@ def get_all_relationships(project_id):
     with db._db_cursor(dictionary=True) as cursor:
         # Get all relationships where source or target is in this project
         # Include statuses so we can determine if blockers are resolved
-        cursor.execute("""
+        cursor.execute(db._sql("""
             SELECT r.source_item_id, r.target_item_id, r.relationship_type,
                    si.title as source_title, ti.title as target_title,
                    ss.name as source_status, ts.name as target_status
@@ -718,7 +722,7 @@ def get_all_relationships(project_id):
             JOIN statuses ss ON si.status_id = ss.id
             JOIN statuses ts ON ti.status_id = ts.id
             WHERE si.project_id = %s OR ti.project_id = %s
-        """, (project_id, project_id))
+        """), (project_id, project_id))
 
         for rel in cursor.fetchall():
             src_id = rel['source_item_id']
@@ -819,7 +823,7 @@ def index():
     if current_project:
         with db._db_cursor(dictionary=True) as cursor:
             # Get items
-            cursor.execute("""
+            cursor.execute(db._sql("""
                 SELECT i.id, i.title, i.description, i.priority, i.complexity,
                        i.parent_id, t.name as type, s.name as status
                 FROM items i
@@ -827,14 +831,15 @@ def index():
                 JOIN statuses s ON i.status_id = s.id
                 WHERE i.project_id = %s
                 ORDER BY i.priority, i.id
-            """, (current_project,))
+            """), (current_project,))
             items = cursor.fetchall()
 
             # Get tags for all items in one query
             item_ids = [item['id'] for item in items]
             item_tags = {}
             if item_ids:
-                placeholders = ','.join(['%s'] * len(item_ids))
+                placeholders = ','.join(
+                    [db._backend.placeholder] * len(item_ids))
                 cursor.execute(f"""
                     SELECT it.item_id, t.id, t.name, t.color
                     FROM item_tags it
@@ -907,6 +912,9 @@ def _run_with_gunicorn(host, port):
     options = {
         'bind': f'{host}:{port}',
         'workers': 1,
+        'worker_class': 'gthread',
+        'threads': 4,
+        'preload_app': True,
         'accesslog': '-',
     }
     KanbanGunicorn(app, options).run()
