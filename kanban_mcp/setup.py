@@ -1048,9 +1048,6 @@ def mcp_config_sqlite_json() -> str:
         "mcpServers": {
             "kanban": {
                 "command": "kanban-mcp",
-                "env": {
-                    "KANBAN_BACKEND": "sqlite",
-                },
             }
         }
     }

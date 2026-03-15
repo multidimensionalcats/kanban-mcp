@@ -36,6 +36,7 @@ class SQLiteBackend(DatabaseBackend):
     """SQLite backend with WAL mode and thread-local connections."""
 
     _instance_counter = 0
+    _counter_lock = threading.Lock()
 
     def __init__(self, db_path: str = None):
         # Resolve path: constructor arg > env var > XDG default
@@ -53,10 +54,11 @@ class SQLiteBackend(DatabaseBackend):
             # own in-memory DB, but threads within the instance share it.
             # Use a monotonic counter (not id()) to avoid address reuse
             # keeping stale shared-cache databases alive via thread-locals.
-            SQLiteBackend._instance_counter += 1
+            with SQLiteBackend._counter_lock:
+                SQLiteBackend._instance_counter += 1
+                n = SQLiteBackend._instance_counter
             self._connect_uri = (
-                f"file:kanban_{SQLiteBackend._instance_counter}"
-                f"?mode=memory&cache=shared")
+                f"file:kanban_{n}?mode=memory&cache=shared")
             self._use_uri = True
         else:
             # Auto-create parent directory for file-based databases
