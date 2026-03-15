@@ -1309,7 +1309,7 @@ def _print_tool_table() -> None:
          "mcpServers"),
     ]
     hdr = f"   {'Tool':<20}{'Config file':<45}{'Key'}"
-    sep = f"   {'────':<20}{'───────────':<45}{'───'}"
+    sep = f"   {'----':<20}{'-----------':<45}{'---'}"
     print(hdr)
     print(sep)
     for tool, cfg, key in rows:

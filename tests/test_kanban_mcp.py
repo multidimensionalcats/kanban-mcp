@@ -9,6 +9,8 @@ import unittest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import kanban_mcp.db
+
 
 def cleanup_test_project(db, project_path):
     """Clean up all test data for a project including the project itself."""
@@ -4122,6 +4124,9 @@ class TestEmbeddingsMCPTools(unittest.TestCase):
         self.assertIsNotNone(embedding)
 
 
+@unittest.skipUnless(
+    kanban_mcp.db._HAS_MYSQL,
+    "mysql-connector-python not installed")
 class TestCredentialHardening(unittest.TestCase):
     """Tests for #8219 — no hardcoded defaults for DB credentials."""
 
@@ -4594,6 +4599,9 @@ class TestCLIInputValidation(unittest.TestCase):
         self.assertIn("Error", result)
 
 
+@unittest.skipUnless(
+    kanban_mcp.db._HAS_MYSQL,
+    "mysql-connector-python not installed")
 class TestPathResolution(unittest.TestCase):
     """Test that project paths are resolved before hashing."""
 
