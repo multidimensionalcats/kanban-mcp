@@ -3,6 +3,7 @@
 import logging
 import os
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +33,9 @@ def _get_default_db_path() -> str:
 
 
 class SQLiteBackend(DatabaseBackend):
-    """SQLite backend with WAL mode for concurrent access."""
+    """SQLite backend with WAL mode and thread-local connections."""
+
+    _instance_counter = 0
 
     def __init__(self, db_path: str = None):
         # Resolve path: constructor arg > env var > XDG default
@@ -43,42 +46,62 @@ class SQLiteBackend(DatabaseBackend):
                 'KANBAN_SQLITE_PATH',
                 _get_default_db_path())
 
-        # Auto-create parent directory for file-based databases
-        if self._db_path != ':memory:':
+        self._local = threading.local()
+
+        if self._db_path == ':memory:':
+            # Unique shared-cache URI so each Backend instance gets its
+            # own in-memory DB, but threads within the instance share it.
+            # Use a monotonic counter (not id()) to avoid address reuse
+            # keeping stale shared-cache databases alive via thread-locals.
+            SQLiteBackend._instance_counter += 1
+            self._connect_uri = (
+                f"file:kanban_{SQLiteBackend._instance_counter}"
+                f"?mode=memory&cache=shared")
+            self._use_uri = True
+        else:
+            # Auto-create parent directory for file-based databases
             Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+            self._connect_uri = self._db_path
+            self._use_uri = False
 
-        # Open persistent connection
-        self._conn = sqlite3.connect(
-            self._db_path,
-            check_same_thread=False,
-            detect_types=sqlite3.PARSE_DECLTYPES)
+        # Initialize connection for the current thread
+        self._get_connection()
 
-        # Enable WAL mode for file-based databases
-        if self._db_path != ':memory:':
-            self._conn.execute('PRAGMA journal_mode=WAL')
-
-        # Enable foreign keys and set busy timeout
-        self._conn.execute('PRAGMA foreign_keys=ON')
-        self._conn.execute('PRAGMA busy_timeout=5000')
+    def _get_connection(self):
+        """Get or create a thread-local database connection."""
+        conn = getattr(self._local, 'conn', None)
+        if conn is None:
+            conn = sqlite3.connect(
+                self._connect_uri,
+                uri=self._use_uri,
+                check_same_thread=False,
+                detect_types=sqlite3.PARSE_DECLTYPES)
+            if self._db_path != ':memory:':
+                conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA foreign_keys=ON')
+            conn.execute('PRAGMA busy_timeout=5000')
+            self._local.conn = conn
+        return conn
 
     @contextmanager
     def db_cursor(self, dictionary=False, commit=False):
         """Context manager for database cursor.
 
         When dictionary=True, rows are returned as real dict objects.
-        Thread-safe: does not mutate shared connection state.
+        Thread-safe: each thread uses its own connection.
         """
-        cursor = self._conn.cursor()
+        conn = self._get_connection()
+        cursor = conn.cursor()
         try:
             if dictionary:
                 yield _DictCursorWrapper(cursor)
             else:
                 yield cursor
             if commit:
-                self._conn.commit()
+                conn.commit()
         except Exception:
             if commit:
-                self._conn.rollback()
+                conn.rollback()
             raise
         finally:
             cursor.close()
