@@ -938,7 +938,7 @@ def _auto_migrate_backend(backend, log) -> None:
                     "Migration %s failed: %s",
                     mfile.name, e,
                 )
-                break
+                raise
     except Exception as e:
         log.error("Auto-migrate error: %s", e)
         raise
@@ -1007,11 +1007,12 @@ def _auto_migrate_mysql_legacy(db_config: dict, log) -> None:
                     "Migration %s failed: %s",
                     mfile.name, e,
                 )
-                break
+                raise
 
         cursor.close()
     except MySQLError as e:
         log.error("Auto-migrate error: %s", e)
+        raise
     finally:
         conn.close()
 

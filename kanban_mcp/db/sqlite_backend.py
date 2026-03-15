@@ -74,7 +74,6 @@ class SQLiteBackend(DatabaseBackend):
             conn = sqlite3.connect(
                 self._connect_uri,
                 uri=self._use_uri,
-                check_same_thread=False,
                 detect_types=sqlite3.PARSE_DECLTYPES)
             if self._db_path != ':memory:':
                 conn.execute('PRAGMA journal_mode=WAL')
@@ -234,10 +233,14 @@ class _DictCursorWrapper:
         return self._to_dict(self._cursor.fetchone())
 
     def fetchall(self):
+        if self._cursor.description is None:
+            return []
         cols = [d[0] for d in self._cursor.description]
         return [dict(zip(cols, row)) for row in self._cursor.fetchall()]
 
     def fetchmany(self, size=None):
+        if self._cursor.description is None:
+            return []
         if size is None:
             rows = self._cursor.fetchmany()
         else:

@@ -733,10 +733,10 @@ class TestAutoMigrate(unittest.TestCase):
 
     @patch("kanban_mcp.setup.get_migration_files")
     @patch("kanban_mcp.setup.mysql.connector")
-    def test_does_not_crash_server_on_failure(
+    def test_migration_failure_propagates(
         self, mock_mysql, mock_get_files,
     ):
-        """auto_migrate should log errors, not sys.exit."""
+        """auto_migrate must propagate migration errors, not swallow them."""
         from kanban_mcp.setup import auto_migrate
         from mysql.connector import Error as RealMySQLError
 
@@ -768,8 +768,8 @@ class TestAutoMigrate(unittest.TestCase):
                 "password": "pw",
                 "database": "kanban",
             }
-            # Should NOT raise or sys.exit
-            auto_migrate(db_config)
+            with self.assertRaises(RealMySQLError):
+                auto_migrate(db_config)
 
     @patch("kanban_mcp.setup.get_migration_files")
     def test_no_migration_files_does_not_crash(
