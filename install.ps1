@@ -80,12 +80,18 @@ if ($Upgrade) {
     Write-Host "Upgrading Docker installation..."
     Write-Host ""
 
-    # Re-download latest Docker files
-    Write-Host "Downloading latest files..."
-    Invoke-WebRequest -Uri "$GithubRaw/docker-compose.yml" -OutFile $composeFile
-    Invoke-WebRequest -Uri "$GithubRaw/Dockerfile" -OutFile (Join-Path $dockerDir "Dockerfile")
-    Invoke-WebRequest -Uri "$GithubRaw/entrypoint.sh" -OutFile (Join-Path $dockerDir "entrypoint.sh")
-    Write-Host "Files updated."
+    # Upgrade the pipx package first so version detection is accurate
+    Write-Host "Upgrading kanban-mcp package..."
+    $ErrorActionPreference = "Continue"
+    try { pipx upgrade kanban-mcp 2>$null } catch {}
+    if ($LASTEXITCODE -ne 0) {
+        try { pipx upgrade "kanban-mcp[mysql]" 2>$null } catch {}
+    }
+    $ErrorActionPreference = "Stop"
+    Write-Host ""
+
+    # Re-download Docker files pinned to the installed version
+    Get-DockerFiles | Out-Null
     Write-Host ""
 
     # Load .env for compose
@@ -375,16 +381,60 @@ function Test-DockerAvailable {
     }
 }
 
+function Get-InstalledVersion {
+    # Get the installed kanban-mcp version for tag-pinned downloads.
+    try {
+        $ver = & python3 -c "from importlib.metadata import version; print(version('kanban-mcp'))" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $ver) { return $ver.Trim() }
+    } catch {}
+    try {
+        $ver = & python -c "from importlib.metadata import version; print(version('kanban-mcp'))" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $ver) { return $ver.Trim() }
+    } catch {}
+    return ""
+}
+
+function Test-LocalCheckout {
+    if (Test-Path "pyproject.toml") {
+        $content = Get-Content "pyproject.toml" -Raw -ErrorAction SilentlyContinue
+        return ($content -match 'name = "kanban-mcp"')
+    }
+    return $false
+}
+
 function Get-DockerFiles {
     $dockerDir = Join-Path $ConfigDir "docker"
     New-Item -ItemType Directory -Path $dockerDir -Force | Out-Null
 
-    Write-Host "Downloading Docker files..."
-    Invoke-WebRequest -Uri "$GithubRaw/docker-compose.yml" -OutFile (Join-Path $dockerDir "docker-compose.yml")
-    Invoke-WebRequest -Uri "$GithubRaw/Dockerfile" -OutFile (Join-Path $dockerDir "Dockerfile")
-    Invoke-WebRequest -Uri "$GithubRaw/entrypoint.sh" -OutFile (Join-Path $dockerDir "entrypoint.sh")
+    # Prefer local files from a checkout (guaranteed version match)
+    if (Test-LocalCheckout) {
+        Write-Host "Copying Docker files from local checkout..."
+        Copy-Item "docker-compose.yml" -Destination (Join-Path $dockerDir "docker-compose.yml")
+        Copy-Item "Dockerfile" -Destination (Join-Path $dockerDir "Dockerfile")
+        Copy-Item "entrypoint.sh" -Destination (Join-Path $dockerDir "entrypoint.sh")
+    } else {
+        # Pin to installed version tag, fall back to main
+        $ver = Get-InstalledVersion
+        $rawUrl = $GithubRaw
+        if ($ver) {
+            $tagUrl = "https://raw.githubusercontent.com/multidimensionalcats/kanban-mcp/v${ver}"
+            # Verify the tag exists before using it
+            try {
+                $null = Invoke-WebRequest -Uri "$tagUrl/Dockerfile" -Method Head -ErrorAction Stop
+                $rawUrl = $tagUrl
+                Write-Host "Downloading Docker files (pinned to v${ver})..."
+            } catch {
+                Write-Host "Downloading Docker files (from main, tag v${ver} not found)..."
+            }
+        } else {
+            Write-Host "Downloading Docker files..."
+        }
+        Invoke-WebRequest -Uri "$rawUrl/docker-compose.yml" -OutFile (Join-Path $dockerDir "docker-compose.yml")
+        Invoke-WebRequest -Uri "$rawUrl/Dockerfile" -OutFile (Join-Path $dockerDir "Dockerfile")
+        Invoke-WebRequest -Uri "$rawUrl/entrypoint.sh" -OutFile (Join-Path $dockerDir "entrypoint.sh")
+    }
 
-    Write-Host "Docker files downloaded to $dockerDir"
+    Write-Host "Docker files installed to $dockerDir"
     return $dockerDir
 }
 

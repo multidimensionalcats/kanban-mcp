@@ -94,6 +94,54 @@ done
 echo "=== kanban-mcp Install ==="
 echo
 
+# ─── Docker file helpers (needed by both --upgrade and fresh install) ─
+
+get_installed_version() {
+    # Get the installed kanban-mcp version for tag-pinned downloads.
+    # Uses python3 directly (PYTHON may not be set yet in --upgrade path).
+    python3 -c "from importlib.metadata import version; print(version('kanban-mcp'))" 2>/dev/null || echo ""
+}
+
+is_local_checkout() {
+    [ -f "pyproject.toml" ] && grep -q 'name = "kanban-mcp"' pyproject.toml 2>/dev/null
+}
+
+download_docker_files() {
+    local docker_dir="$CONFIG_DIR/docker"
+    mkdir -p "$docker_dir"
+
+    # Prefer local files from a checkout (guaranteed version match)
+    if is_local_checkout; then
+        echo "Copying Docker files from local checkout..."
+        cp docker-compose.yml "$docker_dir/docker-compose.yml"
+        cp Dockerfile "$docker_dir/Dockerfile"
+        cp entrypoint.sh "$docker_dir/entrypoint.sh"
+    else
+        # Pin to installed version tag, fall back to main
+        local ver
+        ver=$(get_installed_version)
+        local raw_url="$GITHUB_RAW"
+        if [ -n "$ver" ]; then
+            local tag_url="https://raw.githubusercontent.com/multidimensionalcats/kanban-mcp/v${ver}"
+            # Verify the tag exists before using it
+            if curl -fsSL --head "${tag_url}/Dockerfile" &>/dev/null; then
+                raw_url="$tag_url"
+                echo "Downloading Docker files (pinned to v${ver})..."
+            else
+                echo "Downloading Docker files (from main, tag v${ver} not found)..."
+            fi
+        else
+            echo "Downloading Docker files..."
+        fi
+        curl -fsSL "$raw_url/docker-compose.yml" -o "$docker_dir/docker-compose.yml"
+        curl -fsSL "$raw_url/Dockerfile" -o "$docker_dir/Dockerfile"
+        curl -fsSL "$raw_url/entrypoint.sh" -o "$docker_dir/entrypoint.sh"
+    fi
+
+    chmod +x "$docker_dir/entrypoint.sh"
+    echo "Docker files installed to $docker_dir"
+}
+
 # ─── Upgrade path (early exit) ────────────────────────────────────
 
 if [ "$UPGRADE" = true ]; then
@@ -115,13 +163,15 @@ if [ "$UPGRADE" = true ]; then
     echo "Upgrading Docker installation..."
     echo
 
-    # Re-download latest Docker files
-    echo "Downloading latest files..."
-    curl -fsSL "$GITHUB_RAW/docker-compose.yml" -o "$compose_file"
-    curl -fsSL "$GITHUB_RAW/Dockerfile" -o "$docker_dir/Dockerfile"
-    curl -fsSL "$GITHUB_RAW/entrypoint.sh" -o "$docker_dir/entrypoint.sh"
-    chmod +x "$docker_dir/entrypoint.sh"
-    echo "Files updated."
+    # Upgrade the pipx package first so version detection is accurate
+    echo "Upgrading kanban-mcp package..."
+    if command -v pipx &>/dev/null; then
+        pipx upgrade kanban-mcp 2>/dev/null || pipx upgrade "kanban-mcp[mysql]" 2>/dev/null || true
+    fi
+    echo
+
+    # Re-download Docker files pinned to the installed version
+    download_docker_files
     echo
 
     # Load .env for compose
@@ -368,19 +418,6 @@ check_mysql_running() {
 
 check_docker() {
     command -v docker &>/dev/null && docker compose version &>/dev/null
-}
-
-download_docker_files() {
-    local docker_dir="$CONFIG_DIR/docker"
-    mkdir -p "$docker_dir"
-
-    echo "Downloading Docker files..."
-    curl -fsSL "$GITHUB_RAW/docker-compose.yml" -o "$docker_dir/docker-compose.yml"
-    curl -fsSL "$GITHUB_RAW/Dockerfile" -o "$docker_dir/Dockerfile"
-    curl -fsSL "$GITHUB_RAW/entrypoint.sh" -o "$docker_dir/entrypoint.sh"
-    chmod +x "$docker_dir/entrypoint.sh"
-
-    echo "Docker files downloaded to $docker_dir"
 }
 
 start_docker_mysql() {
